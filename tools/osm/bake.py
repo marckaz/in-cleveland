@@ -485,12 +485,19 @@ def main():
         cands = [b for b in blds if b["name"] == building]
         if not cands:
             return None
-        # The main roof: the biggest piece near the top (not a 6 m2 spire).
-        hi = max(b["top"] for b in cands)
-        b = max((b for b in cands if b["top"] >= 0.8 * hi), key=lambda b: b["poly"].area)
-        p = b["poly"].buffer(-2.0)
-        c = (p if not p.is_empty else b["poly"]).representative_point()
-        return (name, (c.x, b["top"], c.y), math.radians(yaw_deg))
+        # The highest roof piece with room to stand: not a spire, not a pit walled in by the
+        # taller pieces of the crown (open on at least half its sides).
+        for b in sorted(cands, key=lambda b: -b["top"]):
+            if b["poly"].area < 60:
+                continue
+            p = b["poly"].buffer(-2.0)
+            c = (p if not p.is_empty else b["poly"]).representative_point()
+            if abs(roof_at(c.x, c.y) - b["top"]) > 0.3:
+                continue
+            open_sides = sum(roof_at(c.x + 6 * math.cos(k * math.pi / 4), c.y + 6 * math.sin(k * math.pi / 4)) <= b["top"] + 0.3 for k in range(8))
+            if open_sides >= 3:
+                return (name, (c.x, b["top"], c.y), math.radians(yaw_deg))
+        return None
 
     # Yaw: 0 faces north (-z); positive turns left (west).
     spots = [
@@ -503,7 +510,8 @@ def main():
         spot("Warehouse District", 41.49960, -81.70000, 0),
         spot("Rock Hall", 41.50760, -81.69530, 180),
         spot("Flats East Bank", 41.49640, -81.70420, 0),
-        roof_spot("Key Tower roof", "Key Tower", 180) or spot("Key Tower", 41.50060, -81.69310, 180),
+        roof_spot("Key Tower roof", "Key Tower", 180) or roof_spot("200 Public Square roof", "200 Public Square", 0)
+        or spot("Key Tower", 41.50060, -81.69310, 180),
     ]
     for n, p, _ in spots:
         print(f"  spot {n}: {p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}")

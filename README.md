@@ -225,7 +225,7 @@ Real streets are far too wide to jump, so there's a parkour layer on top, placed
 - **Ziplines** (red masts) from a roof down to a lower roof across the street, wherever the drop is gentle enough to ride, there's a run-up behind the mast and room to land.
 - **Ladders** from the street onto roofs up to 18 m high, on walls facing open street.
 
-It's a free run: no course and no finish. **1–0** jump between landmarks (Public Square, the West Side Market, the Tower City roof, East 4th, Playhouse Square, Progressive Field, the Warehouse District, the Rock Hall, the Flats East Bank, and the top of Key Tower). Walking up to one makes it your respawn point. A fall of 10 m or more is fatal, as everywhere.
+It's a free run: no course and no finish. **1–0** jump between landmarks (Public Square, the West Side Market, the Tower City roof, East 4th, Playhouse Square, Progressive Field, the Warehouse District, the Rock Hall, the Flats East Bank, and the roof of 200 Public Square, 191 m up). Walking up to one makes it your respawn point. A fall of 10 m or more is fatal, as everywhere.
 
 How it's made:
 

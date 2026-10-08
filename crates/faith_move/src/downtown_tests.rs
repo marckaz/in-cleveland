@@ -150,11 +150,16 @@ fn ziplines_carry_you_across() {
     assert!(bad.is_empty(), "{} of {} ziplines don't work", bad.len(), t.map.zips.len());
 }
 
-/// Walk off the top of Key Tower: 289 m down is fatal, and you respawn.
+/// Walk off the top of a skyscraper (Key Tower): that fall is fatal, and you respawn.
 #[test]
 fn falling_off_a_tall_roof_is_fatal() {
     let t = town();
-    let key = t.level.checkpoints.iter().find(|c| c.name == "Key Tower roof").unwrap();
-    let (_, ev) = t.run(key.spawn, Vec3::Z, 25.0, |_| fwd());
-    assert!(died(&ev), "walked off Key Tower and lived");
+    let key = t.level.checkpoints.iter().find(|c| c.name.ends_with("roof") && c.spawn.y > 150.0).expect("a skyscraper roof spawn");
+    // Whichever way is open (the tower's upper parts stand on its roof).
+    let fell = (0..8).any(|k| {
+        let a = k as f32 * std::f32::consts::FRAC_PI_4;
+        let (_, ev) = t.run(key.spawn, Vec3::new(a.sin(), 0.0, a.cos()), 25.0, |_| fwd());
+        died(&ev)
+    });
+    assert!(fell, "walked off Key Tower and lived");
 }

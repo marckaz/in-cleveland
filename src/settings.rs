@@ -202,7 +202,7 @@ pub fn setup(mut commands: Commands) {
                 BackgroundColor(PANEL),
             ))
             .with_children(|panel| {
-                panel.spawn((Text::new("FAITH RUNNER"), font(34.0), TextColor(RED)));
+                panel.spawn((Text::new("IN CLEVELAND"), font(34.0), TextColor(RED)));
                 panel.spawn((Text::new("Settings"), font(18.0), dim.clone(), Node { margin: UiRect::bottom(px(12.0)), ..default() }));
                 for (i, r) in ROWS.iter().enumerate() {
                     panel

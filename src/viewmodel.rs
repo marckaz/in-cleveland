@@ -116,7 +116,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
     let sleeve_m = limb(&mut meshes, 0.054, 0.050);
     let fore_m = limb(&mut meshes, 0.037, 0.028);
     let elbow_m = meshes.add(Sphere::new(0.039));
-    let wrist_m = meshes.add(Cylinder::new(0.032, 0.045));
+    let wrist_m = meshes.add(Cylinder::new(0.029, 0.032));
     // The palm: a flattened rounded block (a capsule squashed into a mitten shape).
     let palm_m = meshes.add(Mesh::from(Capsule3d::new(0.030, 0.034)).scaled_by(Vec3::new(1.3, 1.0, 0.48)).rotated_by(Quat::from_rotation_x(FRAC_PI_2)));
     let knuckle_m = meshes.add(Mesh::from(Capsule3d::new(0.012, 0.062)).rotated_by(Quat::from_rotation_z(FRAC_PI_2)));

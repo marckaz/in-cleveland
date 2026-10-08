@@ -1,4 +1,4 @@
-//! Faith Runner: Mirror's Edge-style movement on greybox rooftops.
+//! In Cleveland: Mirror's Edge-style movement on Cleveland's rooftops (built on faith-runner).
 //!
 //! All movement lives in the `faith_move` crate; this file is just the Bevy
 //! shell around it: rendering, input, camera, HUD.
@@ -655,12 +655,28 @@ fn web_pointer_lock(
     mut game: ResMut<Game>,
     mut menu: ResMut<settings::Menu>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     time: Res<Time<Real>>,
     mut lost_for: Local<f32>,
+    mut had_lock: Local<bool>,
 ) {
     let held = web_sys::window().and_then(|w| w.document()).and_then(|d| d.pointer_lock_element()).is_some();
+    if !game.locked {
+        *had_lock = false;
+    }
     if !game.locked || held {
+        *had_lock |= held;
         *lost_for = 0.0;
+        return;
+    }
+    // The browser never gave us the lock (some refuse it, or the click came too late): stay in
+    // the game and ask again on the next click.
+    if !*had_lock {
+        if mouse.just_pressed(MouseButton::Left) {
+            if let Ok(mut cursor) = cursor.single_mut() {
+                cursor.grab_mode = CursorGrabMode::Locked;
+            }
+        }
         return;
     }
     // The browser takes a moment to grant the lock after a click.

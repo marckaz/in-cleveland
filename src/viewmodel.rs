@@ -238,8 +238,14 @@ struct Pose {
     grip: f32,
 }
 
+/// How much of each pose's forearm twist (roll) and inward turn (yaw) to use. The poses were
+/// written for the old stick arms; on a real wrist the full amounts roll the palms in toward
+/// the body and point the fists at the middle of the screen.
+const ROLL_SCALE: f32 = 0.45;
+const YAW_SCALE: f32 = 0.55;
+
 fn pose(pos: Vec3, yaw: f32, pitch: f32, roll: f32, grip: f32) -> Pose {
-    Pose { pos, rot: orient(yaw, pitch, roll), rate: 16.0, grip }
+    Pose { pos, rot: orient(yaw * YAW_SCALE, pitch, roll * ROLL_SCALE), rate: 16.0, grip }
 }
 
 /// Arm pumping in the running gait.

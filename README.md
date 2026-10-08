@@ -229,7 +229,8 @@ Downtown Cleveland at true scale, about 3 km across, from the West Side Market t
 Real streets are far too wide to jump, so there's a parkour layer on top, placed by the bake script:
 
 - **Ziplines** (red masts) from a roof down to a lower roof across the street, wherever the drop is gentle enough to ride, there's a run-up behind the mast and room to land.
-- **Ladders** from the street onto roofs up to 18 m high, on walls facing open street.
+- **Ladders** onto every roof: from the street, or up from the next roof along, chained until all 2,849 roofs you can stand on connect (all but six slivers of skyscraper crowns). The skyscrapers get long service ladders.
+- **Things in the streets and on the roofs**: about 5,500 rooftop AC units, vents, water tanks and stair huts; 5,200 parked cars; dumpsters by the alleys; and the trees, benches, bus shelters, hydrants and bins OpenStreetMap maps, plus street lamps along the main streets. All solid: vault the cars, climb the huts.
 
 It's a free run: no course and no finish. **1–0** jump between landmarks (Public Square, the West Side Market, the Tower City roof, East 4th, Playhouse Square, Progressive Field, the Warehouse District, the Rock Hall, the Flats East Bank, and the roof of 200 Public Square, 191 m up). Walking up to one makes it your respawn point. A fall of 10 m or more is fatal, as everywhere.
 

@@ -160,6 +160,8 @@ struct LevelMats {
     glass: Handle<StandardMaterial>,
     /// Stone landmarks.
     stone: Handle<StandardMaterial>,
+    /// White, coloured per triangle (cars, trees, street furniture).
+    paint: Handle<StandardMaterial>,
     /// Zipline cables and swing bars.
     metal: Handle<StandardMaterial>,
 }
@@ -181,7 +183,8 @@ fn tri_meshes(m: &greybox::TriMesh) -> Vec<Mesh> {
     use std::collections::HashMap;
     const TILE: f32 = 300.0;
     let mut tiles: HashMap<(i32, i32), (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>)> = HashMap::new();
-    for (t, tint) in m.tris.iter().zip(&m.tint) {
+    let colours: Vec<[f32; 3]> = if m.colors.len() == m.tris.len() { m.colors.clone() } else { m.tint.iter().map(|&t| [t, t, t]).collect() };
+    for (t, rgb) in m.tris.iter().zip(&colours) {
         let c = (t[0] + t[1] + t[2]) / 3.0;
         let key = ((c.x / TILE).floor() as i32, (c.z / TILE).floor() as i32);
         let e = tiles.entry(key).or_default();
@@ -197,7 +200,7 @@ fn tri_meshes(m: &greybox::TriMesh) -> Vec<Mesh> {
                 Vec2::new(v.x * along.x + v.z * along.y, v.y) / Vec2::new(3.0, 3.5)
             };
             e.2.push([uv.x, -uv.y]);
-            e.3.push([*tint, *tint, *tint, 1.0]);
+            e.3.push([rgb[0], rgb[1], rgb[2], 1.0]);
         }
     }
     tiles
@@ -228,6 +231,7 @@ fn look_material(mats: &LevelMats, look: Look) -> Handle<StandardMaterial> {
         Look::Road => mats.road.clone(),
         Look::Glass => mats.glass.clone(),
         Look::Stone => mats.stone.clone(),
+        Look::Paint => mats.paint.clone(),
     }
 }
 
@@ -244,6 +248,9 @@ fn spawn_level(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &LevelM
     // Cables and bars: thin boxes stretched between their ends; doors, wire and pads as boxes.
     for (i, f) in level.fixtures.iter().enumerate() {
         if let Fixture::Ladder(l) = *f {
+            if level.ladders_in_meshes {
+                continue;
+            }
             for (a, b, thick) in l.rods() {
                 let len = a.distance(b);
                 let rot = Quat::from_rotation_arc(Vec3::Z, (b - a) / len);
@@ -400,7 +407,8 @@ fn setup_world(
         ..default()
     });
     let stone = materials.add(mat(Color::srgb(0.90, 0.82, 0.70), LinearRgba::BLACK, 0.85));
-    let mats = LevelMats { roof, wall, runner, prop, finish, skyline, water, green, lights, road, glass, stone, metal };
+    let paint = materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.7, ..default() });
+    let mats = LevelMats { roof, wall, runner, prop, finish, skyline, water, green, lights, road, glass, stone, paint, metal };
     spawn_level(&mut commands, &mut meshes, &mats, &level);
     commands.insert_resource(mats);
 

@@ -83,26 +83,66 @@ fn every_spawn_point_stands() {
         assert_eq!(c.state, State::Ground, "{} at {:?}: {:?}", cp.name, c.feet, ev);
         assert!((c.feet.y - cp.spawn.y).abs() < 0.1, "{} sank to {:?}", cp.name, c.feet);
         assert!(!died(&ev), "{}", cp.name);
+        // And the view isn't inside a wall.
+        let eye = cp.spawn + Vec3::Y * 1.6;
+        assert!(!t.world().overlaps(&Aabb::new(eye - Vec3::splat(0.3), eye + Vec3::splat(0.3))), "{}: eye inside something", cp.name);
     }
 }
 
+/// Every roof you can stand on has a way up (ladders from the street or from a neighbouring
+/// roof, climbs, jumps, safe drops, ziplines): all but a few slivers of skyscraper crowns.
+#[test]
+fn nearly_every_roof_can_be_reached() {
+    let t = town();
+    let (got, of) = t.map.reachable;
+    println!("roofs reachable: {got}/{of}");
+    assert!(of > 2000 && got as f32 >= 0.995 * of as f32, "{got}/{of}");
+}
+
+/// Ladders work: a spread of them (from the street and from roofs, short and tall, and the
+/// tallest of all) climbed by scripted input onto their roofs.
 #[test]
 fn ladders_climb_onto_the_roofs() {
     let t = town();
+    let n = t.map.ladders.len();
+    let mut pick: Vec<usize> = (0..n).step_by((n / 160).max(1)).collect();
+    // The longest few too (the skyscraper service ladders) and some from roof to roof.
+    let mut by_len: Vec<usize> = (0..n).collect();
+    by_len.sort_by(|&a, &b| (t.map.ladders[b].1 - t.map.ladders[b].0.y).total_cmp(&(t.map.ladders[a].1 - t.map.ladders[a].0.y)));
+    pick.extend(by_len.iter().take(2));
+    pick.extend((0..n).filter(|&i| t.map.ladders[i].0.y > 0.5).step_by(10).take(40));
+    pick.sort();
+    pick.dedup();
     let mut bad = vec![];
-    for &(base, top, n) in &t.map.ladders {
-        let (c, ev) = t.run(base + n * 2.5, -n, 30.0, |c| if c.feet.y > top - 0.1 && c.state == State::Ground { Input::default() } else { fwd() });
+    for &i in &pick {
+        let (base, top, nrm) = t.map.ladders[i];
+        let secs = 20.0 + (top - base.y) * 1.3;
+        let (c, ev) = t.run(base + nrm * 2.5, -nrm, secs, |c| if c.feet.y > top - 0.1 && c.state == State::Ground { Input::default() } else { fwd() });
         let up = (c.feet.y - top).abs() < 0.1 && c.state == State::Ground;
         if !up || died(&ev) {
             bad.push((base, top, c.feet, c.state));
         }
     }
-    let ok = t.map.ladders.len() - bad.len();
-    println!("ladders: {ok}/{} climbed", t.map.ladders.len());
+    println!("ladders: {}/{} of {} climbed", pick.len() - bad.len(), pick.len(), n);
     for b in bad.iter().take(10) {
         println!("  stuck: ladder at {:?} to {:.1}: ended {:?} {:?}", b.0, b.1, b.2, b.3);
     }
-    assert!(bad.is_empty(), "{} of {} ladders don't get you up", bad.len(), t.map.ladders.len());
+    assert!(bad.is_empty(), "{} of {} ladders tried don't get you up", bad.len(), pick.len());
+}
+
+/// The objects are there and solid: cars, rooftop units, trees.
+#[test]
+fn the_city_has_things_in_it() {
+    use crate::downtown::kind;
+    let t = town();
+    let count = |k: u8| t.map.props.iter().filter(|p| p.kind == k).count();
+    assert!(count(kind::CAR) > 1000 && count(kind::AC) > 1000 && count(kind::TRUNK) > 300, "cars {} ac {} trees {}", count(kind::CAR), count(kind::AC), count(kind::TRUNK));
+    // Walk into a parked car and you stop (or vault it), not pass through.
+    let car = t.map.props.iter().find(|p| p.kind == kind::CAR && t.roof(p.base.x, p.base.z) == 0.0).unwrap();
+    let side = Vec3::new(car.yaw.sin(), 0.0, car.yaw.cos()); // the car's local +Z: across it
+    let (c, _) = t.run(car.base + side * 4.0, -side, 3.0, |_| Input { move_axis: Vec2::new(0.0, 0.4), ..Default::default() });
+    let across = (c.feet - car.base).dot(side);
+    assert!(across > car.size.z * 0.9 || c.feet.y > 0.8, "walked through a car: {:?} vs {:?}", c.feet, car.base);
 }
 
 #[test]
@@ -163,3 +203,4 @@ fn falling_off_a_tall_roof_is_fatal() {
     });
     assert!(fell, "walked off Key Tower and lived");
 }
+

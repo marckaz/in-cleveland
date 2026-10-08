@@ -254,10 +254,20 @@ fn hand_pitch(pitch: f32) -> f32 {
     if pitch > 1.0 { pitch } else { pitch * 0.3 - 0.05 }
 }
 
+/// Everyday poses turn the palms up a little (the thumb side rolls up), so you see a bit of
+/// palm rather than flat backs of hands. Negative is toward the thumb for both hands here,
+/// since every roll is written as side x amount.
+const SUPINATE: f32 = 0.5;
+
 fn pose(pos: Vec3, yaw: f32, pitch: f32, roll: f32, grip: f32) -> Pose {
+    let everyday = pitch <= 1.0;
     // With the knuckles forward the fists sit lower on screen: lift the everyday poses a little.
-    let pos = if pitch > 1.0 { pos } else { pos + Vec3::Y * 0.035 };
-    Pose { pos, rot: orient(yaw * YAW_SCALE, hand_pitch(pitch), roll * ROLL_SCALE), rate: 16.0, grip }
+    let pos = if everyday { pos + Vec3::Y * 0.035 } else { pos };
+    let mut roll = roll * ROLL_SCALE;
+    if everyday && roll.abs() > 0.02 {
+        roll -= roll.signum() * SUPINATE;
+    }
+    Pose { pos, rot: orient(yaw * YAW_SCALE, hand_pitch(pitch), roll), rate: 16.0, grip }
 }
 
 /// Arm pumping in the running gait.

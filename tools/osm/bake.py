@@ -430,54 +430,147 @@ def main():
             ends[j] += 1
     print(f"ziplines: {len(zips)}")
 
-    # Ladders: up from the street onto roofs 4 to 18 m up, on a wall that faces open street.
-    ladders = []
-    for i, b in enumerate(blds):
-        if not (6.0 <= b["top"] <= 18.0) or b["base"] != 0.0 or b["poly"].area < 150:
-            continue
+    # ---- every roof reachable: ladders up from the street, or up from a neighbouring roof you
+    # can already get to, chained until nothing more connects.
+    CLIMB_FREE = 2.8  # a wallclimb gets you up this much without help
+    DROP_SAFE = 8.0  # a drop you can take (roll it past 5.3 m)
+    JUMP_GAP = 2.5  # a gap you can jump
+    by_top = {}
+
+    def owner_at(x, z):
+        """The building whose roof you'd stand on at (x, z): the highest one there, or None."""
+        pt = Point(x, z)
+        best = None
+        for i in tree.query(pt):
+            if blds[i]["poly"].contains(pt) and (best is None or blds[i]["top"] > blds[best]["top"]):
+                best = i
+        return best
+
+    def standable(i):
+        b = blds[i]
+        return b["base"] == 0.0 and b["poly"].area >= 25.0
+
+    def edges(i):
+        b = blds[i]
         coords = list(b["poly"].exterior.coords)
         ccw = b["poly"].exterior.is_ccw
-        best = None
         for (ax, az), (bx, bz) in zip(coords, coords[1:]):
             L = math.hypot(bx - ax, bz - az)
-            if L < 5.0:
+            if L < 2.5:
                 continue
             ex, ez = (bx - ax) / L, (bz - az) / L
-            # Outward normal: the right of each edge on a counter-clockwise ring.
             nx, nz = (ez, -ex) if ccw else (-ez, ex)
-            mx, mz = (ax + bx) / 2, (az + bz) / 2
-            # Room in front at street level, and the roof behind is this building's.
-            if roof_at(mx + nx * 2.0, mz + nz * 2.0) > 0.0 or roof_at(mx + nx * 6.0, mz + nz * 6.0) > 0.0:
+            yield (ax + bx) / 2, (az + bz) / 2, nx, nz, L
+
+    want = [i for i in range(len(blds)) if standable(i)]
+    reached = set()
+    ladders = []
+    # Ziplines: reaching the start roof reaches the end roof.
+    zip_from = defaultdict(list)
+    for A, B in zips:
+        ia, ib = owner_at(A[0], A[2]), owner_at(B[0], B[2])
+        if ia is not None and ib is not None:
+            zip_from[ia].append(ib)
+    neighbours = {i: [j for j in tree.query(blds[i]["poly"].buffer(JUMP_GAP)) if j != i and standable(j)] for i in want}
+
+    def free_way_up(i):
+        """Reached without a ladder: a low roof off the street, or from a reached neighbour by a
+        short climb, a jump across or a safe drop."""
+        b = blds[i]
+        if b["top"] <= CLIMB_FREE:
+            return True
+        for j in neighbours[i]:
+            if j in reached and -CLIMB_FREE <= blds[j]["top"] - b["top"] <= DROP_SAFE:
+                return True
+        return False
+
+    def ladder_up(i, max_climb):
+        """The best wall for a ladder onto roof i, from the street or a reached roof."""
+        b = blds[i]
+        best = None
+        for mx, mz, nx, nz, L in edges(i):
+            # Climb out onto this roof (not a taller one standing on it).
+            ex, ez = mx - nx * 1.0, mz - nz * 1.0
+            if owner_at(ex, ez) != i:
                 continue
-            if not b["poly"].contains(Point(mx - nx * 1.0, mz - nz * 1.0)):
+            # Something flat to stand on in front: the street, or a reached roof.
+            f1, f2 = owner_at(mx + nx * 1.2, mz + nz * 1.2), owner_at(mx + nx * 3.0, mz + nz * 3.0)
+            if f1 != f2:
                 continue
-            if roof_at(mx - nx * 1.0, mz - nz * 1.0) > b["top"] + 0.3:
+            if f1 is None:
+                base_h = 0.0
+            elif f1 in reached:
+                base_h = blds[f1]["top"]
+            else:
                 continue
-            score = L
-            if best is None or score > best[0]:
-                best = (score, (mx, 0.0, mz), (nx, nz))
-        if best:
-            _, base, (nx, nz) = best
-            if all(math.dist((base[0], base[2]), (l[0][0], l[0][2])) > 60 for l in ladders):
-                ladders.append((base, b["top"], (nx, nz)))
-    print(f"ladders: {len(ladders)}")
+            climb = b["top"] - base_h
+            if not (CLIMB_FREE < climb <= max_climb):
+                continue
+            score = climb - 0.2 * min(L, 10.0) + (0.0 if f1 is None else 1.0)
+            if best is None or score < best[0]:
+                best = (score, (mx, base_h, mz), (nx, nz))
+        return best
+
+    # Short ladders first; long ones only where nothing shorter connects (the skyscrapers get
+    # service ladders all the way up).
+    for max_climb in (24.0, 60.0, 400.0):
+        changed = True
+        while changed:
+            changed = False
+            for i in sorted(want, key=lambda i: blds[i]["top"]):
+                if i in reached:
+                    continue
+                if free_way_up(i):
+                    reached.add(i)
+                    changed = True
+                else:
+                    up = ladder_up(i, max_climb)
+                    if up:
+                        _, base, n = up
+                        ladders.append((base, blds[i]["top"], n))
+                        reached.add(i)
+                        changed = True
+                if i in reached:
+                    for j in zip_from.get(i, []):
+                        if j not in reached:
+                            reached.add(j)
+                            changed = True
+    lost = [i for i in want if i not in reached]
+    print(f"ladders: {len(ladders)}; roofs reachable: {len(reached)}/{len(want)}")
+    if lost:
+        print("  not reachable (tallest): " + ", ".join(f"{blds[i]['name'] or '?'} {blds[i]['top']:.0f} m" for i in sorted(lost, key=lambda i: -blds[i]['top'])[:8]))
+    reach_stats = (len(reached), len(want))
 
     # ---- spawn points: street level at landmarks, and a few roofs
     def spot(name, lat, lon, yaw_deg, on_roof=False):
         x, z = proj(lat, lon)
         y = roof_at(x, z) if on_roof else 0.0
-        if not on_roof and roof_at(x, z) > 0:
-            # Step out of the building to the nearest open ground.
-            for r in range(2, 60, 2):
+        def clear(px, pz):
+            area = Point(px, pz).buffer(1.6)
+            return not any(blds[i]["poly"].intersects(area) for i in tree.query(area))
+        if not on_roof and not clear(x, z):
+            # Step out to the nearest open ground, clear of every wall.
+            for r in range(1, 80):
                 found = False
-                for k in range(16):
-                    ang = k * math.pi / 8
-                    if roof_at(x + r * math.cos(ang), z + r * math.sin(ang)) == 0.0:
+                for k in range(24):
+                    ang = k * math.pi / 12
+                    if clear(x + r * math.cos(ang), z + r * math.sin(ang)):
                         x, z = x + r * math.cos(ang), z + r * math.sin(ang)
                         found = True
                         break
                 if found:
                     break
+        if not on_roof:
+            # Face the most open way (down the street), nearest the asked-for heading.
+            def open_run(ang):
+                dx, dz = -math.sin(ang), -math.cos(ang)  # yaw 0 faces -z
+                for d in range(2, 160, 2):
+                    if roof_at(x + dx * d, z + dz * d) > 0.0:
+                        return d
+                return 160
+            want_yaw = math.radians(yaw_deg)
+            best = max((k * math.pi / 8 for k in range(16)), key=lambda a: open_run(a) - 20 * abs(math.remainder(a - want_yaw, 2 * math.pi)))
+            return (name, (x, y, z), best)
         return (name, (x, y, z), math.radians(yaw_deg))
 
     def roof_spot(name, building, yaw_deg):
@@ -516,11 +609,201 @@ def main():
     for n, p, _ in spots:
         print(f"  spot {n}: {p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}")
 
+    # ---- objects: rooftop clutter, parked cars, dumpsters, and the street furniture OSM maps
+    import random
+    rng = random.Random(1796)
+    props = []  # (kind, (cx, base_y, cz), (half_x, height, half_z), yaw, (r, g, b), solid)
+    P_AC, P_VENT, P_TANK, P_HUT, P_SKY, P_CAR, P_CABIN, P_DUMP, P_TRUNK, P_CANOPY, P_POLE, P_LAMP, P_BENCH, P_SHELTER, P_HYDRANT, P_BIN = range(16)
+    keep_clear = []  # (x, z, radius) spots no object may stand on
+
+    for (bx, by, bz), top, (nx, nz) in ladders:
+        keep_clear.append((bx - nx * 1.2, bz - nz * 1.2, 2.6))  # where you climb out on top
+        keep_clear.append((bx + nx * 1.0, bz + nz * 1.0, 1.6))  # the foot of it
+    for A, B in zips:
+        dx, dz = B[0] - A[0], B[2] - A[2]
+        n = math.hypot(dx, dz) or 1.0
+        for d in range(-8, 0):  # the run-up behind the mast
+            keep_clear.append((A[0] + dx / n * d, A[2] + dz / n * d, 1.8))
+        for d in range(0, 6):  # the landing
+            keep_clear.append((B[0] + dx / n * d, B[2] + dz / n * d, 2.2))
+    for _, (x, y, z), _ in [sp for sp in spots if sp]:
+        keep_clear.append((x, z, 6.0))
+    clear_tree = STRtree([Point(x, z).buffer(r) for x, z, r in keep_clear])
+
+    placed = []  # footprints of what's been put down, so nothing overlaps
+
+    def box_poly(cx, cz, hx, hz, yaw):
+        c, s_ = math.cos(yaw), math.sin(yaw)
+        pts = [(cx + c * x + s_ * z, cz - s_ * x + c * z) for x, z in ((-hx, -hz), (hx, -hz), (hx, hz), (-hx, hz))]
+        return Polygon(pts)
+
+    def free(poly):
+        if any(True for _ in clear_tree.query(poly, predicate="intersects")):
+            return False
+        return not any(q.intersects(poly) for q in placed[-400:] if q.distance(poly) < 0.8)
+
+    def put(kind, cx, base, cz, hx, h, hz, yaw, rgb, solid=True, check=True, mark=True):
+        poly = box_poly(cx, cz, hx, hz, yaw)
+        if check and not free(poly.buffer(0.5)):
+            return False
+        props.append((kind, (cx, base, cz), (hx, h, hz), yaw, rgb, solid))
+        if mark:
+            placed.append(poly)
+        return True
+
+    def main_yaw(poly):
+        """Yaw of the footprint's longest edge (so things on the roof line up with it)."""
+        coords = list(poly.exterior.coords)
+        e = max(zip(coords, coords[1:]), key=lambda e: math.dist(e[0], e[1]))
+        return math.atan2(-(e[1][1] - e[0][1]), e[1][0] - e[0][0])
+
+    # Rooftops: AC units, vents, a hut over the stairs, water tanks on the older blocks.
+    for i in want:
+        b = blds[i]
+        if b["top"] < 5.0 or b["poly"].area < 90:
+            continue
+        inner = b["poly"].buffer(-2.2)
+        if inner.is_empty:
+            continue
+        yaw = main_yaw(b["poly"])
+        minx, minz, maxx, maxz = inner.bounds
+        n = int(min(9, max(1, b["poly"].area / 220)))
+        kinds = [P_HUT] + [P_AC] * 5 + [P_VENT] * 3 + [P_SKY] * 2 + ([P_TANK] * 2 if 10 < b["top"] < 45 else [])
+        tries = 0
+        made = 0
+        while made < n and tries < n * 8:
+            tries += 1
+            x, z = rng.uniform(minx, maxx), rng.uniform(minz, maxz)
+            if not inner.contains(Point(x, z)) or owner_at(x, z) != i:
+                continue
+            k = P_HUT if made == 0 and b["poly"].area > 300 else rng.choice(kinds)
+            dims = {P_AC: (0.9, 1.35, 0.65), P_VENT: (0.4, 1.0, 0.4), P_TANK: (1.6, 4.2, 1.6), P_HUT: (1.6, 2.6, 1.3), P_SKY: (1.3, 0.7, 0.8)}[k]
+            col = {P_AC: (0.70, 0.74, 0.78), P_VENT: (0.62, 0.65, 0.68), P_TANK: (0.55, 0.42, 0.30), P_HUT: (0.86, 0.84, 0.80), P_SKY: (0.62, 0.76, 0.86)}[k]
+            hx, h, hz = dims
+            if not inner.contains(box_poly(x, z, hx, hz, yaw)):
+                continue
+            if put(k, x, b["top"], z, hx, h, hz, yaw, col):
+                made += 1
+
+    # Streets: parked cars along the kerbs, both sides.
+    car_colours = [(0.82, 0.10, 0.08), (0.12, 0.22, 0.45), (0.92, 0.92, 0.93), (0.12, 0.12, 0.13), (0.60, 0.62, 0.65), (0.15, 0.35, 0.22), (0.85, 0.65, 0.15), (0.35, 0.36, 0.40)]
+    for el in src["streets"]:
+        t = el.get("tags", {})
+        hw = t.get("highway", "")
+        if hw not in ("residential", "tertiary", "secondary", "unclassified", "primary", "living_street") or t.get("bridge") == "yes" or t.get("oneway") == "yes" and hw == "primary":
+            continue
+        pts = ring(el.get("geometry") or [])
+        if len(pts) < 2:
+            continue
+        line = LineString(pts)
+        w = widths.get(hw, 8)
+        d = 12.0
+        while d < line.length - 12.0:
+            a = line.interpolate(d)
+            bpt = line.interpolate(d + 0.5)
+            ux, uz = bpt.x - a.x, bpt.y - a.y
+            n = math.hypot(ux, uz) or 1.0
+            ux, uz = ux / n, uz / n
+            yaw = math.atan2(-uz, ux)
+            for side in (-1, 1):
+                if rng.random() > 0.26:
+                    continue
+                off = w / 2 - 1.2
+                cx, cz = a.x - uz * off * side, a.y + ux * off * side
+                if owner_at(cx, cz) is not None or not road_area.contains(Point(cx, cz)):
+                    continue
+                col = rng.choice(car_colours)
+                if put(P_CAR, cx, 0.0, cz, 2.2, 1.0, 0.9, yaw, col):
+                    put(P_CABIN, cx - ux * 0.2, 1.0, cz - uz * 0.2, 1.2, 0.5, 0.8, yaw, tuple(min(1.0, c * 0.85 + 0.05) for c in col), check=False, mark=False)
+            d += rng.uniform(6.5, 9.0)
+
+    # Dumpsters against walls by the alleys and service roads: a step up toward the roofs.
+    for el in src["streets"]:
+        if el.get("tags", {}).get("highway") != "service":
+            continue
+        pts = ring(el.get("geometry") or [])
+        if len(pts) < 2:
+            continue
+        line = LineString(pts)
+        d = 4.0
+        while d < line.length - 4.0:
+            a = line.interpolate(d)
+            for i in tree.query(a.buffer(7.0)):
+                if not standable(i) or rng.random() > 0.15:
+                    continue
+                for mx, mz, nx, nz, L in edges(i):
+                    if L < 4 or Point(mx, mz).distance(a) > 7.0:
+                        continue
+                    cx, cz = mx + nx * 0.75, mz + nz * 0.75
+                    if owner_at(cx, cz) is not None:
+                        continue
+                    put(P_DUMP, cx, 0.0, cz, 0.95, 1.3, 0.6, math.atan2(-nz, nx) + math.pi / 2, (0.16, 0.36, 0.22))
+                    break
+            d += 9.0
+
+    # Street furniture where OpenStreetMap has it: trees, lamps, benches, bus shelters, hydrants.
+    furniture = src.get("furniture", [])
+    for el in furniture:
+        t = el.get("tags", {})
+        nodes = [(el["lat"], el["lon"])] if "lat" in el else [(p["lat"], p["lon"]) for p in (el.get("geometry") or []) if p][::3]
+        for lat, lon in nodes:
+            x, z = proj(lat, lon)
+            if owner_at(x, z) is not None or not (x0 < x < x1 and z0 < z < z1):
+                continue
+            yaw = rng.uniform(0, math.pi)
+            if t.get("natural") in ("tree", "tree_row"):
+                hgt = rng.uniform(5.0, 8.5)
+                if put(P_TRUNK, x, 0.0, z, 0.16, hgt * 0.45, 0.16, yaw, (0.36, 0.26, 0.18)):
+                    r = rng.uniform(1.6, 2.4)
+                    props.append((P_CANOPY, (x, hgt * 0.38, z), (r, hgt * 0.62, r), yaw, (0.30 + rng.uniform(-0.04, 0.04), 0.52 + rng.uniform(-0.06, 0.06), 0.26), False))
+            elif t.get("highway") == "street_lamp":
+                if put(P_POLE, x, 0.0, z, 0.08, 6.0, 0.08, yaw, (0.20, 0.21, 0.23)):
+                    props.append((P_LAMP, (x, 5.75, z), (0.28, 0.25, 0.28), yaw, (1.0, 0.9, 0.7), False))
+            elif t.get("amenity") == "bench":
+                put(P_BENCH, x, 0.0, z, 0.9, 0.48, 0.28, yaw, (0.42, 0.30, 0.20))
+            elif t.get("highway") == "bus_stop":
+                if put(P_SHELTER, x, 0.0, z, 1.6, 2.5, 0.08, yaw, (0.55, 0.62, 0.68)):
+                    props.append((P_SHELTER, (x - math.sin(yaw) * 0.7, 2.5, z - math.cos(yaw) * 0.7), (1.7, 0.1, 0.8), yaw, (0.55, 0.62, 0.68), True))
+            elif t.get("emergency") == "fire_hydrant":
+                put(P_HYDRANT, x, 0.0, z, 0.15, 0.8, 0.15, 0.0, (0.86, 0.14, 0.08))
+            elif t.get("amenity") == "waste_basket":
+                put(P_BIN, x, 0.0, z, 0.25, 0.9, 0.25, yaw, (0.15, 0.18, 0.16))
+    # Street lamps along the main streets (OSM maps only a handful downtown), staggered sides.
+    for el in src["streets"]:
+        hw = el.get("tags", {}).get("highway", "")
+        if hw not in ("primary", "secondary", "tertiary", "trunk"):
+            continue
+        pts = ring(el.get("geometry") or [])
+        if len(pts) < 2:
+            continue
+        line = LineString(pts)
+        w = widths.get(hw, 10)
+        d, side = 10.0, 1
+        while d < line.length - 6.0:
+            a = line.interpolate(d)
+            bpt = line.interpolate(d + 0.5)
+            ux, uz = bpt.x - a.x, bpt.y - a.y
+            n = math.hypot(ux, uz) or 1.0
+            ux, uz = ux / n, uz / n
+            off = w / 2 + 0.9
+            cx, cz = a.x - uz * off * side, a.y + ux * off * side
+            if owner_at(cx, cz) is None and put(P_POLE, cx, 0.0, cz, 0.08, 6.5, 0.08, 0.0, (0.20, 0.21, 0.23)):
+                # The arm reaches back out over the road.
+                hx, hz = cx + uz * side * 1.0, cz - ux * side * 1.0
+                props.append((P_LAMP, (hx, 6.25, hz), (0.32, 0.22, 0.32), math.atan2(-uz, ux), (1.0, 0.9, 0.7), False))
+            d += 30.0
+            side = -side
+
+    counts = defaultdict(int)
+    for pr in props:
+        counts[pr[0]] += 1
+    print(f"objects: {len(props)} (roof {sum(counts[k] for k in (P_AC, P_VENT, P_TANK, P_HUT, P_SKY))}, cars {counts[P_CAR]}, dumpsters {counts[P_DUMP]}, trees {counts[P_TRUNK]}, lamps {counts[P_POLE]}, benches {counts[P_BENCH]}, shelters {counts[P_SHELTER]})")
+
     # ---- write
     def q(v):
         return max(-32767, min(32767, int(round(v * 10))))
 
-    out = bytearray(b"CLE2")
+    out = bytearray(b"CLE3")
     out += struct.pack("<4f", x0, z0, x1, z1)
     out += struct.pack("<I", len(blds))
     for b in blds:
@@ -552,6 +835,10 @@ def main():
     out += struct.pack("<I", len(ladders))
     for base, top, (nx, nz) in ladders:
         out += struct.pack("<6f", base[0], base[1], base[2], top, nx, nz)
+    out += struct.pack("<I", len(props))
+    for kind, (cx, cy, cz), (hx, h, hz), yaw, (r, g, b_), solid in props:
+        out += struct.pack("<BB7f3B", kind, 1 if solid else 0, cx, cy, cz, hx, h, hz, yaw, int(r * 255), int(g * 255), int(b_ * 255))
+    out += struct.pack("<II", *reach_stats)
     out += struct.pack("<I", len(spots))
     for name, p, yaw in spots:
         nb = name.encode()

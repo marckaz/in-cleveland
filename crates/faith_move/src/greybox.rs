@@ -35,6 +35,8 @@ pub enum Look {
     Glass,
     /// Old stone and terracotta (landmarks).
     Stone,
+    /// Plain paint in each triangle's own colour (cars, trees, street furniture).
+    Paint,
 }
 
 /// Triangles of a real map (buildings at any angle, streets, water): drawn with `look`, each
@@ -45,6 +47,8 @@ pub struct TriMesh {
     pub solid: bool,
     pub tris: Vec<[Vec3; 3]>,
     pub tint: Vec<f32>,
+    /// Per-triangle colours; when present they replace `tint`.
+    pub colors: Vec<[f32; 3]>,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +75,9 @@ pub struct Level {
     pub meshes: Vec<TriMesh>,
     /// Distance fog (start, end) in metres, for maps bigger than the default's 60-260 m.
     pub fog: Option<(f32, f32)>,
+    /// The ladders are already drawn in `meshes` (a city's worth), so the renderer shouldn't
+    /// draw each one again.
+    pub ladders_in_meshes: bool,
 }
 
 /// What a box sounds like underfoot / under hand (Mirror's Edge's

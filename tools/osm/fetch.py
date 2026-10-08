@@ -15,25 +15,36 @@ import urllib.request
 BBOX = (41.4800, -81.7120, 41.5130, -81.6740)
 MIRRORS = [
     "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
 ]
+
+
+def note(msg, level="notice"):
+    """Print, and on GitHub Actions also as an annotation (visible without the raw log)."""
+    print(f"::{level}::{msg}" if "GITHUB_ACTIONS" in __import__("os").environ else msg, file=sys.stderr, flush=True)
 
 
 def query(q):
     data = urllib.parse.urlencode({"data": q}).encode()
     last = None
-    for attempt in range(6):
+    for attempt in range(12):
         url = MIRRORS[attempt % len(MIRRORS)]
         try:
             req = urllib.request.Request(url, data=data, headers={"User-Agent": "in-cleveland map fetch (github.com/marckaz/in-cleveland)"})
-            with urllib.request.urlopen(req, timeout=300) as r:
-                return json.load(r)
+            with urllib.request.urlopen(req, timeout=240) as r:
+                body = r.read()
+            j = json.loads(body)
+            if "remark" in j and not j.get("elements"):
+                raise RuntimeError(f"server remark: {j['remark'][:200]}")
+            return j
         except Exception as e:  # busy servers answer 429/504; try the next one
             last = e
-            print(f"  {url}: {e}; retrying", file=sys.stderr)
-            time.sleep(10 + attempt * 10)
-    raise SystemExit(f"Overpass failed: {last}")
+            note(f"{url}: {type(e).__name__}: {str(e)[:200]}; retrying", "warning")
+            time.sleep(8 + attempt * 6)
+    note(f"Overpass failed: {last}", "error")
+    raise SystemExit(1)
 
 
 def main():
@@ -45,11 +56,26 @@ def main():
         "green": f'(way["leisure"~"^(park|pitch|garden)$"]({bb});relation["leisure"="park"]({bb});way["landuse"~"^(grass|recreation_ground)$"]({bb}););out tags geom;',
     }
     out = {"bbox": BBOX, "attribution": "Map data (c) OpenStreetMap contributors, ODbL 1.0"}
+    # Buildings in four tiles (smaller answers, kinder to the servers), de-duplicated by id.
+    s, w, n, e = BBOX
+    mid_lat, mid_lon = (s + n) / 2, (w + e) / 2
+    tiles = [(s, w, mid_lat, mid_lon), (s, mid_lon, mid_lat, e), (mid_lat, w, n, mid_lon), (mid_lat, mid_lon, n, e)]
+    seen, blds = set(), []
+    for t in tiles:
+        tb = ",".join(str(v) for v in t)
+        q = f'[out:json][timeout:180];(way["building"]({tb});relation["building"]({tb});way["building:part"]({tb});relation["building:part"]({tb}););out tags geom;'
+        for el in query(q)["elements"]:
+            if (el["type"], el["id"]) not in seen:
+                seen.add((el["type"], el["id"]))
+                blds.append(el)
+        note(f"buildings tile {tb}: {len(blds)} so far")
+        time.sleep(4)
+    out["buildings"] = blds
+    parts.pop("buildings")
     for name, body in parts.items():
-        print(f"fetching {name}", file=sys.stderr)
         out[name] = query(f"[out:json][timeout:180];{body}")["elements"]
-        print(f"  {len(out[name])} elements", file=sys.stderr)
-        time.sleep(5)
+        note(f"{name}: {len(out[name])} elements")
+        time.sleep(4)
     path = sys.argv[1] if len(sys.argv) > 1 else "data/osm/cleveland.json"
     with open(path, "w") as f:
         json.dump(out, f, separators=(",", ":"))

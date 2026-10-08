@@ -77,6 +77,7 @@ def main():
         note(f"{name}: {len(out[name])} elements")
         time.sleep(4)
     path = sys.argv[1] if len(sys.argv) > 1 else "data/osm/cleveland.json"
+    __import__("os").makedirs(__import__("os").path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         json.dump(out, f, separators=(",", ":"))
     print(f"wrote {path}", file=sys.stderr)

@@ -116,6 +116,22 @@ struct Game {
 /// The maps, in the order M cycles through them.
 // Training stays last: the screenshot capture scripts its moves on it.
 const LEVELS: [fn() -> Level; 6] = [rooftops::rooftops, moves::moves, springboard::springboard, cleveland::cleveland, downtown::downtown, greybox::greybox];
+/// The maps' names, in the order of [`LEVELS`] (for picking one by name without building them all).
+const LEVEL_NAMES: [&str; 6] = ["Rooftops", "Moves", "Springboard", "Cleveland", "Downtown", "Training"];
+
+/// A map asked for by name or number: `FAITH_MAP` on a computer, `?map=` on the web page.
+fn requested_map() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let search = web_sys::window()?.location().search().ok()?;
+        search.trim_start_matches('?').split('&').find_map(|kv| kv.strip_prefix("map=").map(str::to_string))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("FAITH_MAP").ok()
+    }
+}
+
 /// The map the game starts on (Cleveland) when FAITH_MAP doesn't pick one.
 const DEFAULT_LEVEL: usize = 3;
 
@@ -322,9 +338,9 @@ fn setup_world(
         2 // the Springboard range: long clear run-ups
     } else if std::env::var_os("FAITH_CAPTURE").is_some() && std::env::var_os("FAITH_CAPTURE_TOUR").is_none() {
         LEVELS.len() - 1
-    } else if let Some(i) = std::env::var("FAITH_MAP").ok().and_then(|v| v.parse::<usize>().ok()) {
+    } else if let Some(i) = requested_map().and_then(|v| v.parse::<usize>().ok()) {
         i.min(LEVELS.len() - 1)
-    } else if let Some(i) = std::env::var("FAITH_MAP").ok().and_then(|v| LEVELS.iter().position(|f| f().name.eq_ignore_ascii_case(v.trim()))) {
+    } else if let Some(i) = requested_map().and_then(|v| LEVEL_NAMES.iter().position(|n| n.eq_ignore_ascii_case(v.trim()))) {
         i
     } else if std::env::var_os("FAITH_CAPTURE").is_some() {
         0 // the tour photographs Rooftops unless FAITH_MAP says otherwise
@@ -332,6 +348,7 @@ fn setup_world(
         DEFAULT_LEVEL
     };
     let level = LEVELS[level_index]();
+    debug_assert_eq!(level.name, LEVEL_NAMES[level_index], "LEVEL_NAMES out of step with LEVELS");
     let world = level.world();
     let cp = &level.checkpoints[0];
     let mut ctrl = Controller::new(Tuning::default(), cp.spawn, cp.yaw);

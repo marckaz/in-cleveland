@@ -54,7 +54,7 @@ jobs:
           wasm-opt -Os --all-features dist/in_cleveland_bg.wasm -o dist/opt.wasm \
             && mv dist/opt.wasm dist/in_cleveland_bg.wasm \
             || echo "wasm-opt failed; shipping the unoptimised build"
-          cp web/index.html dist/
+          sed "s/__BUILD__/${GITHUB_SHA::7}/g" web/index.html > dist/index.html
           touch dist/.nojekyll
           ls -la dist
 

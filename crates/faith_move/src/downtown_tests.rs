@@ -70,10 +70,9 @@ fn the_map_loads() {
     assert!(t.map.buildings.len() > 50, "{} buildings", t.map.buildings.len());
     assert!(!t.map.zips.is_empty() && !t.map.ladders.is_empty() && t.level.checkpoints.len() >= 3);
     // Key Tower is the tallest thing in Ohio.
-    let key = t.map.buildings.iter().find(|(_, b, _)| b.name == "Key Tower").expect("Key Tower");
-    assert!(key.1.top > 280.0, "{}", key.1.top);
-    let tallest = t.map.buildings.iter().map(|(_, b, _)| b.top).fold(0.0, f32::max);
-    assert_eq!(tallest, key.1.top);
+    let tallest = t.map.buildings.iter().max_by(|a, b| a.1.top.total_cmp(&b.1.top)).unwrap();
+    assert_eq!(tallest.1.name, "Key Tower");
+    assert!(tallest.1.top > 280.0, "{}", tallest.1.top);
 }
 
 #[test]

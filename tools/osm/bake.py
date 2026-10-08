@@ -81,8 +81,8 @@ def parse_num(v):
 
 
 def ring(geom):
-    pts = [proj(p["lat"], p["lon"]) for p in geom]
-    return pts
+    # Geometry clipped to the box (`out geom(bbox)`) has nulls for the nodes outside it.
+    return [proj(p["lat"], p["lon"]) for p in geom if p]
 
 
 def polygons_of(el):
@@ -250,11 +250,18 @@ def main():
     kept = []
     for t, p in outlines:
         covered = 0.0
+        inside = []
         if part_tree is not None:
             for i in part_tree.query(p):
                 q = parts[i][1]
                 if p.contains(q.representative_point()):
                     covered += p.intersection(q).area
+                    inside.append(i)
+        # Parts are usually unnamed: they take their building's name (Key Tower's tower is a part).
+        if t.get("name"):
+            for i in inside:
+                if not parts[i][0].get("name"):
+                    parts[i] = ({**parts[i][0], "name": t["name"]}, parts[i][1])
         if covered < 0.6 * p.area:
             kept.append((t, p))
     blds = []
@@ -279,21 +286,23 @@ def main():
             continue
         hw = t.get("highway", "").replace("_link", "")
         w = widths.get(hw, 6) * (0.6 if t.get("highway", "").endswith("_link") else 1.0)
-        roads.append(LineString([proj(p["lat"], p["lon"]) for p in g]).buffer(w / 2, cap_style=2, join_style=2))
+        pts = ring(g)
+        if len(pts) >= 2:
+            roads.append(LineString(pts).buffer(w / 2, cap_style=2, join_style=2))
     road_area = unary_union(roads).intersection(area_box) if roads else Polygon()
     water = []
     for el in src["water"]:
         t = el.get("tags", {})
         if t.get("natural") == "coastline":
             continue
-        if t.get("waterway") == "river" and el["type"] == "way" and el.get("geometry"):
-            water.append(LineString([proj(p["lat"], p["lon"]) for p in el["geometry"]]).buffer(35))
+        if t.get("waterway") == "river" and el["type"] == "way" and el.get("geometry") and len(ring(el["geometry"])) >= 2:
+            water.append(LineString(ring(el["geometry"])).buffer(35))
             continue
         water += polygons_of(el)
     # Lake Erie: everything on the water side of the coastline (OSM keeps the water on the
     # right of a coastline way's direction).
-    coast = [LineString([proj(p["lat"], p["lon"]) for p in el["geometry"]]) for el in src["water"]
-             if el.get("tags", {}).get("natural") == "coastline" and el.get("geometry") and len(el["geometry"]) >= 2]
+    coast = [LineString(ring(el["geometry"])) for el in src["water"]
+             if el.get("tags", {}).get("natural") == "coastline" and el.get("geometry") and len(ring(el["geometry"])) >= 2]
     if coast:
         from shapely.ops import polygonize, split
         pieces = list(polygonize(unary_union([area_box.exterior] + coast)))
@@ -424,7 +433,7 @@ def main():
     # Ladders: up from the street onto roofs 4 to 18 m up, on a wall that faces open street.
     ladders = []
     for i, b in enumerate(blds):
-        if not (4.0 <= b["top"] <= 18.0) or b["base"] != 0.0 or b["poly"].area < 60:
+        if not (6.0 <= b["top"] <= 18.0) or b["base"] != 0.0 or b["poly"].area < 150:
             continue
         coords = list(b["poly"].exterior.coords)
         ccw = b["poly"].exterior.is_ccw
@@ -449,7 +458,7 @@ def main():
                 best = (score, (mx, 0.0, mz), (nx, nz))
         if best:
             _, base, (nx, nz) = best
-            if all(math.dist((base[0], base[2]), (l[0][0], l[0][2])) > 25 for l in ladders):
+            if all(math.dist((base[0], base[2]), (l[0][0], l[0][2])) > 60 for l in ladders):
                 ladders.append((base, b["top"], (nx, nz)))
     print(f"ladders: {len(ladders)}")
 
@@ -476,7 +485,9 @@ def main():
         cands = [b for b in blds if b["name"] == building]
         if not cands:
             return None
-        b = max(cands, key=lambda b: b["top"])
+        # The main roof: the biggest piece near the top (not a 6 m2 spire).
+        hi = max(b["top"] for b in cands)
+        b = max((b for b in cands if b["top"] >= 0.8 * hi), key=lambda b: b["poly"].area)
         p = b["poly"].buffer(-2.0)
         c = (p if not p.is_empty else b["poly"]).representative_point()
         return (name, (c.x, b["top"], c.y), math.radians(yaw_deg))

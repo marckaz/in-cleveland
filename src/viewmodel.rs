@@ -125,8 +125,8 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
     let knee_m = meshes.add(Sphere::new(0.062));
     let shoe_m = meshes.add(Cuboid::new(0.105, 0.075, 0.27));
     let sole_m = meshes.add(Cuboid::new(0.11, 0.022, 0.275));
-    let torso_m = limb(&mut meshes, 0.15, 0.17);
-    let hips_m = meshes.add(Capsule3d::new(0.12, 0.10));
+    let torso_m = limb(&mut meshes, 0.125, 0.11);
+    let hips_m = meshes.add(Capsule3d::new(0.105, 0.11));
 
     let cam = commands
         .spawn((
@@ -583,11 +583,13 @@ fn legs(body: &Body, state: &mut ViewmodelState, c: &Controller, phase: f32, dt:
     let base = c.feet;
     let hip_c = base + up * (HIP_HEIGHT - state.hip_drop) + fwd * -0.06;
 
-    // Torso: hips up to the chest, behind the eye; leaning back on a slide.
+    // Torso: from the hips up to the belly, set back behind the eye so looking down you see
+    // over it to your legs and feet; leaning back on a slide.
     let lean = if matches!(c.state, MoveState::Slide { .. }) { -0.30 } else { 0.08 * (speed / 7.0).min(1.0) };
-    let chest = hip_c + (up + fwd * lean).normalize() * 0.40;
+    let spine = hip_c - fwd * 0.13;
+    let chest = spine + (up + fwd * lean).normalize() * 0.30;
     if let Ok(mut t) = parts.get_mut(body.torso) {
-        *t = limb_tf(hip_c, chest);
+        *t = limb_tf(spine, chest);
     }
     if let Ok(mut t) = parts.get_mut(body.hips) {
         *t = Transform::from_translation(hip_c).with_rotation(Quat::from_rotation_y(state.body_yaw) * Quat::from_rotation_z(FRAC_PI_2));

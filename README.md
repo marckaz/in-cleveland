@@ -6,6 +6,12 @@ A Mirror's Edge-style rooftop run across Cleveland, Ohio: from the West Side Mar
 
 It's a fork of [faith-runner](https://github.com/tnrjns/faith-runner) by tnrjns, which did all the work on the movement: Mirror's Edge-style first-person movement in Rust, with a Bevy greybox course to test it in. The movement lives in its own crate, `crates/faith_move`, which only depends on `glam`. It knows nothing about Bevy, so the same controller can later be dropped into IW4L or anything else that can hand it collision boxes.
 
+## What's new in V2
+
+- **Downtown**: real downtown Cleveland at true scale, from OpenStreetMap. 2,908 buildings at their real footprints and heights, streets, the Cuyahoga, Lake Erie and the parks, with 70 rooftop ziplines and 518 street ladders, all checked by tests. See [Downtown](#downtown-real-cleveland-from-openstreetmap).
+- **A new body**: an original first-person runner built in code, no Mirror's Edge assets, so it works in the browser too. Shoulders, IK elbows, gloved hands with jointed fingers that grip or open per move, a red wrap on each forearm, and legs and a torso you see when you look down.
+- **Playable in the browser** at https://marckaz.github.io/in-cleveland/, rebuilt on every push.
+
 ## Play in the browser
 
 Every push to `main` builds the game for the web (WebAssembly and WebGL2) and publishes it to GitHub Pages (`.github/workflows/pages.yml`). The page is `web/index.html`. Use a desktop browser with a keyboard and mouse, or a gamepad. Click the game to grab the mouse; **Esc** frees it and opens the settings menu. Settings are kept in the browser. Mirror's Edge's own body and sounds can't load in the browser (they come from a local install), so the web version uses the procedural arms and plays silently.
@@ -185,7 +191,7 @@ Loader code: `crates/me_assets` (UE3 package, mesh, animation, texture and sound
 
 ## Camera and arms (procedural fallback)
 
-- **Arms**: procedural first-person arms with a pose for every move. They pump when running, keep a palm on the wall while wallrunning, reach while climbing, grip the lip when hanging, plant a hand on vaults, trail a hand on slides and swing into dodges. They lag slightly behind fast looks. They're drawn by a second camera on their own layer, so they never clip into walls and don't stretch with the sprint FOV. Code: `src/viewmodel.rs`.
+- **Arms and body**: an original first-person body (`src/viewmodel.rs`): arms with shoulders, two-bone IK elbows and wrists that only bend so far, hands with two-joint fingers and a thumb that grip or open per move, and legs and a torso in the world that step with the footstep phase. A pose for every move. They pump when running, keep a palm on the wall while wallrunning, reach while climbing, grip the lip when hanging, plant a hand on vaults, trail a hand on slides and swing into dodges. They lag slightly behind fast looks. They're drawn by a second camera on their own layer, so they never clip into walls and don't stretch with the sprint FOV. Code: `src/viewmodel.rs`.
 - **Bob**: footstep-synced head bob (up-down, side to side, a little roll) that scales with speed. You lean into strafes and sharp turns.
 - **Shake**: landings, hard landings, rolls, ledge grabs, wall kicks, slides and dodges each add screen shake that fades out, plus a low constant shake at full sprint and while sliding. Landings also dip the camera and kick it down.
 - **Tilt and FOV**: the camera tilts away from the wall on wallruns, looks up to the wall top while climbing or hanging, does Mirror's Edge's forward somersault on a roll, and widens the FOV as you sprint.

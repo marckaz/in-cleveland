@@ -54,6 +54,8 @@ struct ArmRig {
     sleeve: Entity,
     fore: Entity,
     elbow: Entity,
+    /// The red wrap, on the forearm just short of the wrist.
+    wrap: Entity,
     hand: Entity,
     /// Per finger: (base joint, middle joint).
     fingers: [(Entity, Entity); 4],
@@ -116,7 +118,8 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
     let sleeve_m = limb(&mut meshes, 0.054, 0.050);
     let fore_m = limb(&mut meshes, 0.037, 0.028);
     let elbow_m = meshes.add(Sphere::new(0.039));
-    let wrist_m = meshes.add(Cylinder::new(0.029, 0.032));
+    // The red wrap round the end of the forearm (a little wider than the arm there).
+    let wrap_m = limb(&mut meshes, 0.0315, 0.0305);
     // The palm: a flattened rounded block (a capsule squashed into a mitten shape).
     let palm_m = meshes.add(Mesh::from(Capsule3d::new(0.030, 0.034)).scaled_by(Vec3::new(1.3, 1.0, 0.48)).rotated_by(Quat::from_rotation_x(FRAC_PI_2)));
     let knuckle_m = meshes.add(Mesh::from(Capsule3d::new(0.012, 0.062)).rotated_by(Quat::from_rotation_z(FRAC_PI_2)));
@@ -166,9 +169,9 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
         let sleeve = part(&mut commands, root, &sleeve_m, &shirt, Transform::default(), &layer);
         let fore = part(&mut commands, root, &fore_m, &skin, Transform::default(), &layer);
         let elbow = part(&mut commands, root, &elbow_m, &skin, Transform::default(), &layer);
+        let wrap = part(&mut commands, root, &wrap_m, &red, Transform::default(), &layer);
         // The hand: wrist at its origin, fingers toward -Z, palm facing -Y, thumb toward -x*side.
         let hand = joint(&mut commands, root, Transform::default(), &layer);
-        part(&mut commands, hand, &wrist_m, &red, Transform::from_xyz(0.0, 0.0, 0.012).with_rotation(Quat::from_rotation_x(FRAC_PI_2)), &layer);
         part(&mut commands, hand, &palm_m, &glove, Transform::from_xyz(0.0, 0.0, -0.052), &layer);
         part(&mut commands, hand, &knuckle_m, &glove, Transform::from_xyz(0.0, 0.002, -0.088), &layer);
         let along_z = Quat::from_rotation_x(FRAC_PI_2);
@@ -190,7 +193,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
         part(&mut commands, tb, &t0, &glove, Transform::from_xyz(0.0, 0.0, -0.022).with_rotation(along_z), &layer);
         let tm = joint(&mut commands, tb, Transform::from_xyz(0.0, 0.0, -0.044), &layer);
         part(&mut commands, tm, &t1, &skin, Transform::from_xyz(0.0, 0.0, -0.018).with_rotation(along_z), &layer);
-        arms.push(ArmRig { upper, sleeve, fore, elbow, hand, fingers: [fingers[0], fingers[1], fingers[2], fingers[3]], thumb: (tb, tm) });
+        arms.push(ArmRig { upper, sleeve, fore, elbow, wrap, hand, fingers: [fingers[0], fingers[1], fingers[2], fingers[3]], thumb: (tb, tm) });
     }
 
     // Lower body, in the world (layer 0): one root at the origin, parts placed in world space.
@@ -244,8 +247,17 @@ struct Pose {
 const ROLL_SCALE: f32 = 0.45;
 const YAW_SCALE: f32 = 0.55;
 
+/// The poses tip the hands up (positive pitch) a lot; on the jointed arm that points the fists
+/// at the sky. Ordinary poses keep 30% of it, so the knuckles face forward with the wrist
+/// nearly straight; reaches (climbing, hanging, overhead grips: over 1 rad) keep it all.
+fn hand_pitch(pitch: f32) -> f32 {
+    if pitch > 1.0 { pitch } else { pitch * 0.3 - 0.05 }
+}
+
 fn pose(pos: Vec3, yaw: f32, pitch: f32, roll: f32, grip: f32) -> Pose {
-    Pose { pos, rot: orient(yaw * YAW_SCALE, pitch, roll * ROLL_SCALE), rate: 16.0, grip }
+    // With the knuckles forward the fists sit lower on screen: lift the everyday poses a little.
+    let pos = if pitch > 1.0 { pos } else { pos + Vec3::Y * 0.035 };
+    Pose { pos, rot: orient(yaw * YAW_SCALE, hand_pitch(pitch), roll * ROLL_SCALE), rate: 16.0, grip }
 }
 
 /// Arm pumping in the running gait.
@@ -503,7 +515,7 @@ pub fn animate(
         let pole = Vec3::new(s * 0.75, -1.0, 0.35);
         let (elbow, wrist) = two_bone(shoulder, wrist_target, UPPER_ARM, FOREARM, pole);
         let fore_dir = (wrist - elbow).normalize_or_zero();
-        let hand_rot = wrist_limit(sway_rot * rot, fore_dir, 0.95);
+        let hand_rot = wrist_limit(sway_rot * rot, fore_dir, 1.2);
 
         let rig = &body.arms[i];
         let set = |parts: &mut Query<&mut Transform, (Without<PlayerCamera>, Without<ViewmodelCamera>)>, e: Entity, tf: Transform| {
@@ -516,6 +528,7 @@ pub fn animate(
         set(&mut parts, rig.sleeve, limb_tf(shoulder, shoulder.lerp(elbow, 0.42)));
         set(&mut parts, rig.fore, limb_tf(elbow, wrist + fore_dir * 0.012));
         set(&mut parts, rig.elbow, Transform::from_translation(elbow));
+        set(&mut parts, rig.wrap, limb_tf(wrist - fore_dir * 0.055, wrist + fore_dir * 0.004));
         set(&mut parts, rig.hand, Transform::from_translation(wrist).with_rotation(hand_rot));
         // Fingers curl toward the palm (-Y): a rotation about X by a negative angle.
         for (f, &(base, mid)) in rig.fingers.iter().enumerate() {

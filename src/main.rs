@@ -33,8 +33,13 @@ fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Faith Runner".into(),
+                title: "In Cleveland".into(),
                 resolution: (1600, 900).into(),
+                // In the browser: draw into the page's canvas, fill it, and keep the page's own
+                // shortcuts (space scrolling, F1 help, ...) out of the game's way.
+                canvas: Some("#bevy".into()),
+                fit_canvas_to_parent: true,
+                prevent_default_event_handling: true,
                 ..default()
             }),
             ..default()
@@ -68,7 +73,7 @@ fn main() {
             );
     }
     #[cfg(not(feature = "prologue"))]
-    app.add_systems(Update, (capture::run.run_if(resource_exists::<capture::Capture>), settings::update, cursor_lock, game).chain());
+    app.add_systems(Update, (capture::run.run_if(resource_exists::<capture::Capture>), settings::update, cursor_lock, web_pointer_lock, game).chain());
     app.run();
 }
 
@@ -565,6 +570,38 @@ fn cursor_lock(
         cursor.grab_mode = if want { CursorGrabMode::Locked } else { CursorGrabMode::None };
     }
 }
+
+/// In the browser, Esc is the browser's: it releases the pointer lock without the game ever seeing
+/// the key. When the lock goes away by itself, do what Esc does: free the mouse and open the menu.
+#[cfg(target_arch = "wasm32")]
+fn web_pointer_lock(
+    mut game: ResMut<Game>,
+    mut menu: ResMut<settings::Menu>,
+    mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    time: Res<Time<Real>>,
+    mut lost_for: Local<f32>,
+) {
+    let held = web_sys::window().and_then(|w| w.document()).and_then(|d| d.pointer_lock_element()).is_some();
+    if !game.locked || held {
+        *lost_for = 0.0;
+        return;
+    }
+    // The browser takes a moment to grant the lock after a click.
+    *lost_for += time.delta_secs();
+    if *lost_for < 0.5 {
+        return;
+    }
+    *lost_for = 0.0;
+    game.locked = false;
+    menu.open = true;
+    if let Ok(mut cursor) = cursor.single_mut() {
+        cursor.visible = true;
+        cursor.grab_mode = CursorGrabMode::None;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn web_pointer_lock() {}
 
 /// M cycles through the maps.
 fn switch_level(

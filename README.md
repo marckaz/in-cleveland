@@ -1,10 +1,28 @@
-# Faith Runner
+# In Cleveland
 
-Mirror's Edge-style first-person movement in Rust, with a Bevy greybox course to test it in.
+**Play it in your browser: https://marckaz.github.io/in-cleveland/**
 
-The movement lives in its own crate, `crates/faith_move`, which only depends on `glam`. It knows nothing about Bevy, so the same controller can later be dropped into IW4L or anything else that can hand it collision boxes.
+A Mirror's Edge-style rooftop run across Cleveland, Ohio: from the West Side Market in Ohio City, over the Cuyahoga on a zipline, past Terminal Tower and Public Square, down Euclid Avenue to the GE Chandelier at Playhouse Square. Every move is on it: vaults, slides, springboards, the balance beam, wallruns, wallclimbs, the swing pole, rolls and door barges. The map is described under [Cleveland](#cleveland-default).
 
-## Run it
+It's a fork of [faith-runner](https://github.com/tnrjns/faith-runner) by tnrjns, which did all the work on the movement: Mirror's Edge-style first-person movement in Rust, with a Bevy greybox course to test it in. The movement lives in its own crate, `crates/faith_move`, which only depends on `glam`. It knows nothing about Bevy, so the same controller can later be dropped into IW4L or anything else that can hand it collision boxes.
+
+## Play in the browser
+
+Every push to `main` builds the game for the web (WebAssembly and WebGL2) and publishes it to GitHub Pages (`.github/workflows/pages.yml`). The page is `web/index.html`. Use a desktop browser with a keyboard and mouse, or a gamepad. Click the game to grab the mouse; **Esc** frees it and opens the settings menu. Settings are kept in the browser. Mirror's Edge's own body and sounds can't load in the browser (they come from a local install), so the web version uses the procedural arms and plays silently.
+
+To build the web version yourself:
+
+```
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129
+cargo build --profile web --target wasm32-unknown-unknown
+wasm-bindgen --target web --no-typescript --out-dir dist --out-name in_cleveland target/wasm32-unknown-unknown/web/in-cleveland.wasm
+cp web/index.html dist/
+```
+
+Then serve `dist/` with any static file server (for example `python -m http.server -d dist`).
+
+## Run it on your computer
 
 You need Rust (https://rustup.rs). From this folder:
 

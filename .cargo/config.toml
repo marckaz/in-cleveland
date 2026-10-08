@@ -1,0 +1,3 @@
+# getrandom's browser backend (needed by winit and accesskit in the WebAssembly build).
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="wasm_js"']

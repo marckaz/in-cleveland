@@ -59,20 +59,40 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# Faith Runner settings\nmaster = {:.2}\nmusic = {:.2}\neffects = {:.2}\nsensitivity = {:.2}\nfov = {:.0}\n",
+            "# In Cleveland settings\nmaster = {:.2}\nmusic = {:.2}\neffects = {:.2}\nsensitivity = {:.2}\nfov = {:.0}\n",
             self.master, self.music, self.effects, self.sensitivity, self.fov
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load() -> Settings {
         std::fs::read_to_string(FILE).map(|t| Settings::parse(&t)).unwrap_or_default()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save(&self) {
         if let Err(e) = std::fs::write(FILE, self.to_text()) {
             warn!("couldn't save {FILE}: {e}");
         }
     }
+
+    /// In the browser, settings live in the page's local storage.
+    #[cfg(target_arch = "wasm32")]
+    pub fn load() -> Settings {
+        web_storage().and_then(|s| s.get_item(FILE).ok().flatten()).map(|t| Settings::parse(&t)).unwrap_or_default()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn save(&self) {
+        if let Some(s) = web_storage() {
+            let _ = s.set_item(FILE, &self.to_text());
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
 }
 
 struct Row {

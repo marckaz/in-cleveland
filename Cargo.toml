@@ -2,7 +2,7 @@
 members = [".", "crates/*"]
 
 [package]
-name = "faith-runner"
+name = "in-cleveland"
 version = "0.1.0"
 edition = "2024"
 
@@ -12,11 +12,27 @@ me_assets = { path = "crates/me_assets" }
 faith_anim = { path = "crates/faith_anim" }
 bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "audio", "wav"] }
 
+# The browser build (GitHub Pages): WebGL2, the browser's random numbers, and the page's
+# pointer lock and local storage.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.19.1", default-features = false, features = ["web", "webgl2"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "Storage"] }
+
 # Fast-ish dev builds: optimize dependencies, keep our code debuggable.
 [features]
 # The Mirror's Edge prologue map, drawn and playable from your install (FAITH_MAP=prologue).
 # Not part of the public source.
 prologue = ["me_assets/prologue"]
+
+# The browser build: small and fast.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
 
 [profile.dev]
 opt-level = 1

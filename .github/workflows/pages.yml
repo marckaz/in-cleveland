@@ -1,0 +1,73 @@
+# Builds the browser version (WebAssembly + WebGL2) and publishes it to GitHub Pages.
+name: Web build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Must match the wasm-bindgen version in Cargo.lock.
+      - name: Install wasm-bindgen and wasm-opt
+        run: |
+          WB=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/version = |"/,""); print; exit}' Cargo.lock)
+          echo "wasm-bindgen $WB"
+          (curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$WB/wasm-bindgen-$WB-x86_64-unknown-linux-musl.tar.gz" | tar xz \
+            && sudo mv "wasm-bindgen-$WB-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/) \
+            || cargo install wasm-bindgen-cli --version "$WB" --locked
+          wasm-bindgen --version
+          # wasm-opt is optional: it only makes the download smaller.
+          (curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz" | tar xz \
+            && sudo cp binaryen-version_123/bin/wasm-opt /usr/local/bin/ && wasm-opt --version) || echo "no wasm-opt"
+
+      - name: Movement tests
+        run: cargo test -p faith_move
+
+      - name: Build for the browser
+        run: cargo build --profile web --target wasm32-unknown-unknown
+
+      - name: Bind and shrink
+        run: |
+          mkdir -p dist
+          wasm-bindgen --target web --no-typescript --out-dir dist --out-name in_cleveland \
+            target/wasm32-unknown-unknown/web/in-cleveland.wasm
+          wasm-opt -Os --all-features dist/in_cleveland_bg.wasm -o dist/opt.wasm \
+            && mv dist/opt.wasm dist/in_cleveland_bg.wasm \
+            || echo "wasm-opt failed; shipping the unoptimised build"
+          cp web/index.html dist/
+          touch dist/.nojekyll
+          ls -la dist
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

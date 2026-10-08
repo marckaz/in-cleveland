@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>In Cleveland</title>
+<meta name="description" content="A Mirror's Edge-style rooftop run across Cleveland, Ohio, from the West Side Market to Playhouse Square. Plays in your browser.">
+<meta property="og:title" content="In Cleveland">
+<meta property="og:description" content="Rooftop parkour across Cleveland, in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --sky: #9ec7ee;
+    --paper: #f4f5f7;
+    --ink: #15171a;
+    --mute: #5b6470;
+    --red: #db1a12;
+    --line: #d4d8de;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--sky); color: var(--ink); overflow: hidden; }
+  body { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  #game { position: fixed; inset: 0; }
+  canvas#bevy { display: block; width: 100%; height: 100%; outline: none; }
+
+  #cover {
+    position: fixed; inset: 0; z-index: 2;
+    display: grid; place-items: center;
+    background:
+      linear-gradient(180deg, rgba(158,199,238,0) 55%, rgba(244,245,247,.9) 55.1%),
+      var(--sky);
+    transition: opacity .5s ease;
+  }
+  #cover.gone { opacity: 0; pointer-events: none; }
+
+  /* A flat Cleveland skyline in the cover: Key Tower, Terminal Tower, 200 Public Square. */
+  .skyline { position: absolute; left: 0; right: 0; top: 55%; height: 0; }
+  .skyline i { position: absolute; bottom: 0; background: #e6eaef; }
+
+  .card {
+    position: relative; width: min(560px, calc(100vw - 32px));
+    background: var(--paper); border-top: 6px solid var(--red);
+    padding: 28px 28px 22px; box-shadow: 0 30px 60px -30px rgba(21,23,26,.45);
+  }
+  h1 {
+    font-family: "Archivo Black", Impact, sans-serif; font-weight: 400;
+    font-size: clamp(40px, 9vw, 64px); line-height: .9; letter-spacing: -.01em;
+    margin: 0 0 6px; text-transform: uppercase;
+  }
+  h1 span { color: var(--red); }
+  .tag { margin: 0 0 22px; color: var(--mute); font-size: 13px; line-height: 1.5; }
+  .bar { height: 6px; background: var(--line); overflow: hidden; }
+  .bar b { display: block; height: 100%; width: 0; background: var(--red); transition: width .15s linear; }
+  .status { display: flex; justify-content: space-between; margin: 8px 0 20px; font-size: 12px; color: var(--mute); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td { padding: 5px 0; border-top: 1px solid var(--line); vertical-align: top; }
+  td:first-child { color: var(--mute); width: 46%; padding-right: 12px; }
+  kbd {
+    font-family: inherit; font-weight: 600; font-size: 11px;
+    border: 1px solid #b9c0c9; border-bottom-width: 2px; padding: 0 5px; background: #fff;
+  }
+  .foot { margin-top: 16px; font-size: 11px; color: var(--mute); line-height: 1.5; }
+  .foot a { color: var(--ink); }
+  .err { color: var(--red); white-space: pre-wrap; }
+  @media (max-width: 520px) { .card { padding: 22px 16px 18px; } td:first-child { width: 40%; } }
+</style>
+</head>
+<body>
+<div id="game"><canvas id="bevy" tabindex="0"></canvas></div>
+
+<div id="cover">
+  <div class="skyline" aria-hidden="true">
+    <i style="left:8%;width:5%;height:120px"></i>
+    <i style="left:14%;width:3%;height:70px"></i>
+    <i style="left:21%;width:6%;height:210px"></i><i style="left:23.2%;width:1.6%;height:250px"></i>
+    <i style="left:36%;width:4%;height:150px"></i>
+    <i style="left:44%;width:5%;height:175px"></i><i style="left:45.4%;width:2.2%;height:215px"></i><i style="left:46.2%;width:.6%;height:240px"></i>
+    <i style="left:58%;width:7%;height:130px"></i>
+    <i style="left:70%;width:4%;height:95px"></i>
+    <i style="left:80%;width:6%;height:160px"></i>
+  </div>
+  <div class="card">
+    <h1>In <span>Cleveland</span></h1>
+    <p class="tag">Rooftop parkour from the West Side Market to Playhouse Square: across Ohio City, over the Cuyahoga, past Terminal Tower, down Euclid.</p>
+    <div class="bar"><b id="fill"></b></div>
+    <div class="status"><span id="msg">Loading the city…</span><span id="pct"></span></div>
+    <table>
+      <tr><td>Move / look</td><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> + mouse</td></tr>
+      <tr><td>Jump, vault, wallrun, climb</td><td><kbd>Space</kbd></td></tr>
+      <tr><td>Slide, roll (tap before landing)</td><td><kbd>Shift</kbd> or <kbd>C</kbd></td></tr>
+      <tr><td>180° turn</td><td><kbd>Q</kbd></td></tr>
+      <tr><td>Kick, barge doors</td><td>Left click or <kbd>F</kbd></td></tr>
+      <tr><td>Respawn / checkpoints</td><td><kbd>R</kbd> / <kbd>1</kbd>–<kbd>0</kbd></td></tr>
+      <tr><td>Menu / other maps</td><td><kbd>Esc</kbd> / <kbd>M</kbd></td></tr>
+    </table>
+    <p class="foot">Desktop browser with a keyboard and mouse, or a gamepad. Movement from
+      <a href="https://github.com/tnrjns/faith-runner">faith-runner</a> by tnrjns.
+      Landmarks are placed in their real order, but the distances are squeezed.</p>
+  </div>
+</div>
+
+<script type="module">
+  import init from "./in_cleveland.js";
+
+  const fill = document.getElementById("fill");
+  const pct = document.getElementById("pct");
+  const msg = document.getElementById("msg");
+  const cover = document.getElementById("cover");
+  const canvas = document.getElementById("bevy");
+
+  const mobile = matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches;
+  if (mobile) msg.textContent = "Best on a computer with a keyboard and mouse. Loading anyway…";
+
+  // Fetch the game with a progress bar (it's a few megabytes).
+  async function fetchWithProgress(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: ${res.status}`);
+    const total = +res.headers.get("content-length") || 0;
+    if (!res.body || !total) return new Uint8Array(await res.arrayBuffer());
+    const reader = res.body.getReader();
+    const parts = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      got += value.length;
+      const p = Math.min(100, Math.round((got / total) * 100));
+      fill.style.width = p + "%";
+      pct.textContent = p + "%";
+    }
+    const out = new Uint8Array(got);
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  }
+
+  try {
+    const bytes = await fetchWithProgress("./in_cleveland_bg.wasm");
+    fill.style.width = "100%";
+    msg.textContent = "Building the skyline…";
+    pct.textContent = "";
+    // Let the message paint before the main thread is busy compiling.
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)));
+    try {
+      await init({ module_or_path: bytes });
+    } catch (e) {
+      // Bevy's browser event loop hands control back to the page by throwing; that's expected.
+      if (!String(e && e.message || e).includes("Using exceptions for control flow")) throw e;
+    }
+    cover.classList.add("gone");
+    canvas.focus();
+  } catch (e) {
+    console.error(e);
+    msg.innerHTML = "";
+    const err = document.createElement("span");
+    err.className = "err";
+    err.textContent = "Couldn't start the game. It needs WebGL2 (a recent Chrome, Edge, Firefox or Safari).\n" + (e && e.message ? e.message : e);
+    msg.appendChild(err);
+  }
+</script>
+</body>
+</html>

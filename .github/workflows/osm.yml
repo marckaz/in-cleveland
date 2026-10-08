@@ -1,0 +1,27 @@
+# Downloads downtown Cleveland from OpenStreetMap into data/osm/cleveland.json and commits it.
+# Run it by hand (Actions > Fetch OpenStreetMap > Run workflow) to refresh the map data;
+# then `python3 tools/osm/bake.py` turns it into the Downtown map.
+name: Fetch OpenStreetMap
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [tools/osm/fetch.py]
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/osm/fetch.py data/osm/cleveland.json
+      - name: Commit the data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/osm/cleveland.json
+          git diff --cached --quiet || git commit -m "Refresh OpenStreetMap data for downtown Cleveland"
+          git push

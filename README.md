@@ -194,7 +194,7 @@ All of it lives in `crates/faith_move/src/camera.rs` (`CameraFx`) with its numbe
 
 ## The maps
 
-The game starts on **Cleveland**. **M** switches map (Rooftops → Moves → Springboard → Cleveland → Training). Each has a time trial: the clock starts when you leave the start area and stops at the orange marker.
+The game starts on **Cleveland**. **M** switches map (Rooftops → Moves → Springboard → Cleveland → Downtown → Training). Each has a time trial: the clock starts when you leave the start area and stops at the orange marker.
 
 ### Cleveland (default)
 
@@ -215,6 +215,27 @@ You run east. North is on your left, so Lake Erie, the stadium and the Rock Hall
 11. **Playhouse Square**: the orange marker under the GE Chandelier.
 
 Every section, the girder and crate alternatives, missing the zipline and the shut door are checked by scripted input in `crates/faith_move/src/cleveland_tests.rs`, along with one test that runs the whole map start to finish in one go (a scripted player does it in about 66 s). `FAITH_MAP=3` (or `FAITH_MAP=cleveland`) starts on it.
+
+### Downtown (real Cleveland, from OpenStreetMap)
+
+Downtown Cleveland at true scale, about 3 km across, from the West Side Market to Playhouse Square and the lakefront (`crates/faith_move/src/downtown.rs`). Every building stands on its real footprint at its real height, from [OpenStreetMap](https://www.openstreetmap.org/copyright): OSM's `height` where it has one, otherwise `building:levels` x 3.5 m, otherwise a guess from the kind of building. Key Tower is 289 m, Terminal Tower 52 storeys. Streets, the Cuyahoga, Lake Erie and the parks are painted on the ground. The ground is flat: the river valley and the bluffs aren't modelled.
+
+Real streets are far too wide to jump, so there's a parkour layer on top, placed by the bake script:
+
+- **Ziplines** (red masts) from a roof down to a lower roof across the street, wherever the drop is gentle enough to ride, there's a run-up behind the mast and room to land.
+- **Ladders** from the street onto roofs up to 18 m high, on walls facing open street.
+
+It's a free run: no course and no finish. **1–0** jump between landmarks (Public Square, the West Side Market, the Tower City roof, East 4th, Playhouse Square, Progressive Field, the Warehouse District, the Rock Hall, the Flats East Bank, and the top of Key Tower). Walking up to one makes it your respawn point. A fall of 10 m or more is fatal, as everywhere.
+
+How it's made:
+
+1. `tools/osm/fetch.py` downloads the area from the Overpass API into `data/osm/cleveland.json`. The **Fetch OpenStreetMap** workflow runs it on GitHub and commits the result.
+2. `tools/osm/bake.py` (needs `pip install mapbox-earcut shapely numpy`) turns that into `crates/faith_move/data/downtown.bin`: buildings as triangulated prisms (3D `building:part`s stand in for the outlines they fill), the ground shapes, and the ziplines, ladders and spawn points.
+3. The game reads the file at startup, and collides with the buildings as triangles (`MeshWorld`), so walls at any angle take wallruns, climbs and ledge grabs.
+
+`crates/faith_move/src/downtown_tests.rs` checks that every spawn point holds you, every ladder gets you onto its roof, and every zipline carries you across and sets you down on the far roof.
+
+Map data © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright).
 
 ### Rooftops
 
@@ -325,6 +346,8 @@ crates/faith_move/src/
   greybox.rs       the Training course, as data (and the Level type)
   cleveland.rs     the Cleveland map (and its skyline)
   cleveland_tests.rs every Cleveland section, and the whole run, beaten by scripted input
+  downtown.rs      the Downtown map: real Cleveland from OpenStreetMap (data/downtown.bin)
+  downtown_tests.rs its spawn points, ladders and ziplines, checked by scripted input
   rooftops.rs      the Rooftops map
   rooftops_tests.rs every Rooftops route, beaten by scripted input
   moves.rs         the Moves map (springboard, beam, swing pole, zipline)
@@ -340,6 +363,7 @@ src/viewmodel.rs   procedural first-person arms (fallback)
 src/me_viewmodel.rs loads Faith's body from your install, skins and draws it where faith_anim places it
 src/audio.rs       Mirror's Edge sounds: animation cues, surfaces, landings, breathing, wind, music
 src/settings.rs    the launch/Esc settings menu (volumes, sensitivity, FOV)
+tools/osm/         fetch.py downloads downtown Cleveland from OpenStreetMap; bake.py builds the Downtown map
 crates/me_assets/  UE3 readers: packages, skeletal meshes, animations, morphs, textures, sounds
 crates/faith_anim/ Mirror's Edge's animation driver, body and camera placement (Rig), and which sounds play when
 tools/me-extract/  scripts that read movement values out of Mirror's Edge's TdGame.u, and decompile its move code
@@ -347,4 +371,4 @@ tools/me-extract/  scripts that read movement values out of Mirror's Edge's TdGa
 
 ## Screenshot mode
 
-`FAITH_CAPTURE=shots cargo run --release` (PowerShell: `$env:FAITH_CAPTURE="shots"; cargo run --release`) plays a scripted sprint, vault, slide, dodge, wallrun, wallclimb and ledge hang, saves a PNG mid-move for each into `shots/`, and quits. `FAITH_CAPTURE_FROM=5` starts from a later move. Add `FAITH_CAPTURE_TOUR=1` to photograph each Rooftops checkpoint instead, or `FAITH_CAPTURE_MOVES=1` to shoot the springboard, balance beam, swing, zipline and a kick on the Moves map. `FAITH_CAPTURE_SLIDE=1` slides down a Springboard-map lane and shoots what each key does mid-slide (look left/right, Q, F, A, S, jump, let go of crouch, look down); `FAITH_CAPTURE_DELAY=<frames>` sets how long after the key. `FAITH_CAPTURE_LOOK=1` shoots looking down in steps, standing and running. `FAITH_MAP=0` starts the game on Rooftops, `FAITH_MAP=1` on the Moves map, `FAITH_MAP=2` on Springboard, `FAITH_MAP=3` on Cleveland (the default; a map's name works too). With `FAITH_CAPTURE_TOUR=1`, `FAITH_MAP=3` photographs the Cleveland checkpoints. `FAITH_CAPTURE_YAW=<degrees>` (right is positive) and `FAITH_CAPTURE_PITCH=<degrees>` (up) turn the tour's camera to shoot the scenery beside the route. Handy for checking the level renders after changes.
+`FAITH_CAPTURE=shots cargo run --release` (PowerShell: `$env:FAITH_CAPTURE="shots"; cargo run --release`) plays a scripted sprint, vault, slide, dodge, wallrun, wallclimb and ledge hang, saves a PNG mid-move for each into `shots/`, and quits. `FAITH_CAPTURE_FROM=5` starts from a later move. Add `FAITH_CAPTURE_TOUR=1` to photograph each Rooftops checkpoint instead, or `FAITH_CAPTURE_MOVES=1` to shoot the springboard, balance beam, swing, zipline and a kick on the Moves map. `FAITH_CAPTURE_SLIDE=1` slides down a Springboard-map lane and shoots what each key does mid-slide (look left/right, Q, F, A, S, jump, let go of crouch, look down); `FAITH_CAPTURE_DELAY=<frames>` sets how long after the key. `FAITH_CAPTURE_LOOK=1` shoots looking down in steps, standing and running. `FAITH_MAP=0` starts the game on Rooftops, `FAITH_MAP=1` on the Moves map, `FAITH_MAP=2` on Springboard, `FAITH_MAP=3` on Cleveland (the default), `FAITH_MAP=4` on Downtown (a map's name works too). With `FAITH_CAPTURE_TOUR=1`, `FAITH_MAP=3` photographs the Cleveland checkpoints. `FAITH_CAPTURE_YAW=<degrees>` (right is positive) and `FAITH_CAPTURE_PITCH=<degrees>` (up) turn the tour's camera to shoot the scenery beside the route. Handy for checking the level renders after changes.

@@ -7,6 +7,7 @@ pub mod camera;
 pub mod cleveland;
 pub mod climb;
 pub mod controller;
+pub mod downtown;
 pub mod fixtures;
 pub mod grabtransfer;
 pub mod greybox;
@@ -44,6 +45,8 @@ mod course_tests;
 mod rooftops_tests;
 #[cfg(test)]
 mod cleveland_tests;
+#[cfg(test)]
+mod downtown_tests;
 #[cfg(test)]
 mod moves_tests;
 #[cfg(test)]

@@ -26,7 +26,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use faith_move::greybox::{self, Level, Look};
-use faith_move::{cleveland, moves, rooftops, springboard, Fixture};
+use faith_move::{cleveland, downtown, moves, rooftops, springboard, Fixture, MeshWorld};
+use faith_move::world::Layered;
 use faith_move::{Aabb, BoxWorld, CameraFx, Controller, Shot, Event as MoveEvent, Input as MoveInput, State as MoveState, Tuning};
 
 fn main() {
@@ -83,6 +84,8 @@ fn main() {
 struct Game {
     ctrl: Controller,
     world: BoxWorld,
+    /// The map's triangle surfaces (real buildings), collided with as well as `world`.
+    mesh: Option<MeshWorld>,
     level: Level,
     /// Which of [`LEVELS`] is loaded.
     level_index: usize,
@@ -112,7 +115,7 @@ struct Game {
 
 /// The maps, in the order M cycles through them.
 // Training stays last: the screenshot capture scripts its moves on it.
-const LEVELS: [fn() -> Level; 5] = [rooftops::rooftops, moves::moves, springboard::springboard, cleveland::cleveland, greybox::greybox];
+const LEVELS: [fn() -> Level; 6] = [rooftops::rooftops, moves::moves, springboard::springboard, cleveland::cleveland, downtown::downtown, greybox::greybox];
 /// The map the game starts on (Cleveland) when FAITH_MAP doesn't pick one.
 const DEFAULT_LEVEL: usize = 3;
 
@@ -135,23 +138,91 @@ struct LevelMats {
     green: Handle<StandardMaterial>,
     /// String lights, the chandelier, lit signs.
     lights: Handle<StandardMaterial>,
+    /// Streets.
+    road: Handle<StandardMaterial>,
+    /// Glass towers.
+    glass: Handle<StandardMaterial>,
+    /// Stone landmarks.
+    stone: Handle<StandardMaterial>,
     /// Zipline cables and swing bars.
     metal: Handle<StandardMaterial>,
 }
 
+/// The map's fog: the greybox maps' 60-260 m, or the map's own (a whole city needs more).
+fn level_fog(level: &Level) -> DistanceFog {
+    let (start, end) = level.fog.unwrap_or((60.0, 260.0));
+    DistanceFog {
+        color: Color::srgb(0.70, 0.82, 0.94),
+        directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.4),
+        directional_light_exponent: 20.0,
+        falloff: FogFalloff::Linear { start, end },
+    }
+}
+
+/// A map's triangle surfaces as meshes, in 300 m tiles so the far ones can be culled. UVs put
+/// one grid tile on a 3 m x 3.5 m patch of wall (a storey) and on 2 m of roof.
+fn tri_meshes(m: &greybox::TriMesh) -> Vec<Mesh> {
+    use std::collections::HashMap;
+    const TILE: f32 = 300.0;
+    let mut tiles: HashMap<(i32, i32), (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>)> = HashMap::new();
+    for (t, tint) in m.tris.iter().zip(&m.tint) {
+        let c = (t[0] + t[1] + t[2]) / 3.0;
+        let key = ((c.x / TILE).floor() as i32, (c.z / TILE).floor() as i32);
+        let e = tiles.entry(key).or_default();
+        let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+        for v in t {
+            e.0.push(v.to_array());
+            e.1.push(n.to_array());
+            let uv = if n.y.abs() > 0.5 {
+                Vec2::new(v.x, v.z) / 2.0
+            } else {
+                // Along the wall, whichever way it faces.
+                let along = Vec2::new(-n.z, n.x).normalize_or_zero();
+                Vec2::new(v.x * along.x + v.z * along.y, v.y) / Vec2::new(3.0, 3.5)
+            };
+            e.2.push([uv.x, -uv.y]);
+            e.3.push([*tint, *tint, *tint, 1.0]);
+        }
+    }
+    tiles
+        .into_values()
+        .map(|(pos, nrm, uv, col)| {
+            let n = pos.len() as u32;
+            Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
+                .with_inserted_indices(Indices::U32((0..n).collect()))
+        })
+        .collect()
+}
+
+fn look_material(mats: &LevelMats, look: Look) -> Handle<StandardMaterial> {
+    match look {
+        Look::Roof => mats.roof.clone(),
+        Look::Wall => mats.wall.clone(),
+        Look::Runner => mats.runner.clone(),
+        Look::Prop => mats.prop.clone(),
+        Look::Finish => mats.finish.clone(),
+        Look::Skyline => mats.skyline.clone(),
+        Look::Water => mats.water.clone(),
+        Look::Green => mats.green.clone(),
+        Look::Lights => mats.lights.clone(),
+        Look::Road => mats.road.clone(),
+        Look::Glass => mats.glass.clone(),
+        Look::Stone => mats.stone.clone(),
+    }
+}
+
 fn spawn_level(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &LevelMats, level: &Level) {
+    for m in &level.meshes {
+        for mesh in tri_meshes(m) {
+            commands.spawn((LevelGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(look_material(mats, m.look))));
+        }
+    }
     for (b, look) in level.solids.iter().chain(&level.decor) {
-        let material = match look {
-            Look::Roof => mats.roof.clone(),
-            Look::Wall => mats.wall.clone(),
-            Look::Runner => mats.runner.clone(),
-            Look::Prop => mats.prop.clone(),
-            Look::Finish => mats.finish.clone(),
-            Look::Skyline => mats.skyline.clone(),
-            Look::Water => mats.water.clone(),
-            Look::Green => mats.green.clone(),
-            Look::Lights => mats.lights.clone(),
-        };
+        let material = look_material(mats, *look);
         commands.spawn((LevelGeom, Mesh3d(meshes.add(box_mesh(b))), MeshMaterial3d(material)));
     }
     // Cables and bars: thin boxes stretched between their ends; doors, wire and pads as boxes.
@@ -303,7 +374,16 @@ fn setup_world(
         emissive: LinearRgba::rgb(4.0, 2.6, 1.0),
         ..default()
     });
-    let mats = LevelMats { roof, wall, runner, prop, finish, skyline, water, green, lights, metal };
+    let road = materials.add(StandardMaterial { base_color: Color::srgb(0.42, 0.44, 0.47), perceptual_roughness: 0.95, ..default() });
+    let glass = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.66, 0.75, 0.86),
+        base_color_texture: Some(grid.clone()),
+        perceptual_roughness: 0.25,
+        metallic: 0.2,
+        ..default()
+    });
+    let stone = materials.add(mat(Color::srgb(0.90, 0.82, 0.70), LinearRgba::BLACK, 0.85));
+    let mats = LevelMats { roof, wall, runner, prop, finish, skyline, water, green, lights, road, glass, stone, metal };
     spawn_level(&mut commands, &mut meshes, &mats, &level);
     commands.insert_resource(mats);
 
@@ -321,19 +401,16 @@ fn setup_world(
         Camera3d::default(),
         // Near plane 1 cm: the legs render in the world and the camera sits right above them
         // (in a slide, inside the hips), so 5 cm sliced them open at the bottom of the screen.
-        Projection::Perspective(PerspectiveProjection { fov: 70f32.to_radians(), near: 0.01, ..default() }),
+        Projection::Perspective(PerspectiveProjection { fov: 70f32.to_radians(), near: 0.01, far: 6000.0, ..default() }),
         Transform::from_translation(cp.spawn + Vec3::Y * 1.7),
-        DistanceFog {
-            color: Color::srgb(0.70, 0.82, 0.94),
-            directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.4),
-            directional_light_exponent: 20.0,
-            falloff: FogFalloff::Linear { start: 60.0, end: 260.0 },
-        },
+        level_fog(&level),
     ));
 
+    let mesh = level.mesh_world();
     commands.insert_resource(Game {
         ctrl,
         world,
+        mesh,
         level,
         level_index,
         checkpoint: 0,
@@ -611,6 +688,7 @@ fn switch_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mats: Res<LevelMats>,
     geom: Query<Entity, With<LevelGeom>>,
+    mut fog: Query<&mut DistanceFog, With<PlayerCamera>>,
 ) {
     if !keys.just_pressed(KeyCode::KeyM) {
         return;
@@ -622,6 +700,10 @@ fn switch_level(
     game.level_index = (game.level_index + 1) % LEVELS.len();
     game.level = LEVELS[game.level_index]();
     game.world = game.level.world();
+    game.mesh = game.level.mesh_world();
+    for mut f in &mut fog {
+        *f = level_fog(&game.level);
+    }
     spawn_level(&mut commands, &mut meshes, &mats, &game.level);
     game.checkpoint = 0;
     game.timer = None;
@@ -747,9 +829,11 @@ fn play(
             game.flash = Some(("REACTION TIME".to_string(), 0.0));
         }
         virtual_time.set_relative_speed(speed);
-        let world = &game.world;
-        game.ctrl.step(dt, &input, world);
         let g = &mut *game;
+        match &g.mesh {
+            Some(mesh) => g.ctrl.step(dt, &input, &Layered { still: &g.world, moving: mesh }),
+            None => g.ctrl.step(dt, &input, &g.world),
+        }
         g.look.apply(&mut g.ctrl, dt);
         game.shot = game.fx.update(dt, &game.ctrl, &input);
     }
@@ -764,7 +848,9 @@ fn play(
     }
 
     if let Some(i) = game.level.checkpoint_at(game.ctrl.feet) {
-        if i > game.checkpoint {
+        // On a course you move on through them; in a free-run city, whichever you reach.
+        let free = game.level.finish.is_none();
+        if i > game.checkpoint || (free && i != game.checkpoint) {
             game.checkpoint = i;
             let cp = &game.level.checkpoints[i];
             game.ctrl.spawn = cp.spawn;
@@ -775,7 +861,7 @@ fn play(
 
     // ---- time trial: starts when you leave the start area, ends at the finish
     let f = game.ctrl.feet;
-    if game.timer.is_none() && game.checkpoint == 0 && game.level.checkpoint_at(f) != Some(0) && game.ctrl.state == MoveState::Ground {
+    if game.timer.is_none() && game.level.finish.is_some() && game.checkpoint == 0 && game.level.checkpoint_at(f) != Some(0) && game.ctrl.state == MoveState::Ground {
         game.timer = Some(0.0);
     }
     let at_finish = game.level.in_finish(f);

@@ -29,6 +29,22 @@ pub enum Look {
     Green,
     /// Warm lit bulbs and crystals (string lights, a chandelier, lit signs).
     Lights,
+    /// Asphalt.
+    Road,
+    /// Glass and steel towers.
+    Glass,
+    /// Old stone and terracotta (landmarks).
+    Stone,
+}
+
+/// Triangles of a real map (buildings at any angle, streets, water): drawn with `look`, each
+/// triangle shaded by its `tint` (1 = the look's own colour), and collided with when `solid`.
+#[derive(Clone, Debug)]
+pub struct TriMesh {
+    pub look: Look,
+    pub solid: bool,
+    pub tris: Vec<[Vec3; 3]>,
+    pub tint: Vec<f32>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +67,10 @@ pub struct Level {
     pub checkpoints: Vec<Checkpoint>,
     /// Ziplines, swing poles, balance beams.
     pub fixtures: Vec<Fixture>,
+    /// Triangle surfaces, for maps that aren't all boxes.
+    pub meshes: Vec<TriMesh>,
+    /// Distance fog (start, end) in metres, for maps bigger than the default's 60-260 m.
+    pub fog: Option<(f32, f32)>,
 }
 
 /// What a box sounds like underfoot / under hand (Mirror's Edge's
@@ -103,7 +123,17 @@ impl Level {
     }
 
     pub fn world(&self) -> BoxWorld {
-        BoxWorld { boxes: self.solids.iter().map(|(b, _)| *b).collect(), fixtures: self.fixtures.clone(), ..Default::default() }
+        let boxes: Vec<Aabb> = self.solids.iter().map(|(b, _)| *b).collect();
+        if boxes.len() > 2000 {
+            return BoxWorld::indexed(boxes, self.fixtures.clone(), 8.0);
+        }
+        BoxWorld { boxes, fixtures: self.fixtures.clone(), ..Default::default() }
+    }
+
+    /// The solid triangles, if the map has any (collide with them as well as with `world()`).
+    pub fn mesh_world(&self) -> Option<crate::world::MeshWorld> {
+        let tris: Vec<[Vec3; 3]> = self.meshes.iter().filter(|m| m.solid).flat_map(|m| m.tris.iter().copied()).collect();
+        (!tris.is_empty()).then(|| crate::world::MeshWorld::new(tris, vec![]))
     }
 
     pub(crate) fn paint(&mut self, look: Look, min: [f32; 3], max: [f32; 3]) {

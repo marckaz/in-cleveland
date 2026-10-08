@@ -4,6 +4,7 @@
 //! player position, state, events and a camera [`View`].
 
 pub mod camera;
+pub mod cleveland;
 pub mod climb;
 pub mod controller;
 pub mod fixtures;
@@ -41,6 +42,8 @@ mod tests;
 mod course_tests;
 #[cfg(test)]
 mod rooftops_tests;
+#[cfg(test)]
+mod cleveland_tests;
 #[cfg(test)]
 mod moves_tests;
 #[cfg(test)]

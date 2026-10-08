@@ -28,7 +28,7 @@ It opens on a **settings menu**: master volume, music, effects, mouse sensitivit
 | Kick / punch / barge a door | Left mouse (or F), as in the game | X |
 | Idle animation (standing still) | G cycles Faith's first-person idles | |
 | Respawn at checkpoint | R | Select |
-| Jump to checkpoint 1–6 | 1–6 | |
+| Jump to checkpoint 1–10 | 1–9, 0 | |
 | Next map | M | |
 | Settings menu (pauses) | Esc | |
 | Toggle help | F1 | |
@@ -176,9 +176,29 @@ All of it lives in `crates/faith_move/src/camera.rs` (`CameraFx`) with its numbe
 
 ## The maps
 
-**M** switches map (Rooftops → Moves → Springboard → Training). Each has a time trial: the clock starts when you leave the start area and stops at the orange marker.
+The game starts on **Cleveland**. **M** switches map (Rooftops → Moves → Springboard → Cleveland → Training). Each has a time trial: the clock starts when you leave the start area and stops at the orange marker.
 
-### Rooftops (default)
+### Cleveland (default)
+
+A rooftop run across Cleveland, Ohio, west to east: from the West Side Market in Ohio City, over the Cuyahoga, past Terminal Tower and Public Square, down Euclid Avenue to the GE Chandelier at Playhouse Square (`crates/faith_move/src/cleveland.rs`). Every move in the game is on it.
+
+You run east. North is on your left, so Lake Erie, the stadium and the Rock Hall are off to the left, and the ballpark is off to the right. The landmarks are in their real order and on their real sides of the route, but the distances are squeezed (the real walk is about 3 km; the run is about 390 m) and the skyscrapers are drawn at 0.6 of their height so their tops stay inside the fog.
+
+1. **West Side Market**: start on a roof beside the market's clock tower. Vault the rail between the AC units, mantle the skylight, slide under the pipe, jump the 4 m gap.
+2. **Lorain Ave**: sprint at the red step and block at the edge and springboard 3.5 m up onto the next roof. A plain jump falls short.
+3. **West Bank**: walk the balance beam over the gap. The "CLE" sign in lights is on the next roof.
+4. **Cuyahoga River**: jump up to the cable and zipline 66 m across the river valley, 10 m down to Tower City. Below you: the Flats, the Detroit-Superior Bridge on the left, the Hope Memorial Bridge and its Guardians of Traffic on the right, the raised lift bridge at the river mouth. Miss the cable and the fall is fatal.
+5. **Tower City**: wallrun the red base of Terminal Tower (on your right) across the 8 m gap, or walk the girder on the left.
+6. **Public Square**: wallclimb the 3.3 m wall right of the HVAC block, or mantle the crate on the left and grab the roof from it.
+7. **Ontario St**: weave through the AC units, then cross the 12 m girder over Ontario Street, with Public Square, the Soldiers' and Sailors' Monument and Key Tower below and to your left.
+8. **Euclid Ave**: jump to the swing pole over Euclid, hold W, and jump off on the forward swing to the lower roof.
+9. **Old Arcade**: a 6 m drop to East 4th. Roll it (tap crouch just before landing) or eat a hard landing.
+10. **East 4th St**: under the string lights, slide the duct, hop the vents, barge the door at a run (or kick it standing), and wallclimb the red-lipped wall.
+11. **Playhouse Square**: the orange marker under the GE Chandelier.
+
+Every section, the girder and crate alternatives, missing the zipline and the shut door are checked by scripted input in `crates/faith_move/src/cleveland_tests.rs`, along with one test that runs the whole map start to finish in one go (a scripted player does it in about 66 s). `FAITH_MAP=3` (or `FAITH_MAP=cleveland`) starts on it.
+
+### Rooftops
 
 A run across a block of buildings, 190 m long, with choices. The street is 30 m down: falling off respawns you at the last checkpoint.
 
@@ -285,6 +305,8 @@ crates/faith_move/src/
   world.rs         the World trait (sweep / overlap), box and triangle worlds, collide-and-slide, wall and ledge probes
   mesh_tests.rs    the moves on triangle scenes turned off the grid
   greybox.rs       the Training course, as data (and the Level type)
+  cleveland.rs     the Cleveland map (and its skyline)
+  cleveland_tests.rs every Cleveland section, and the whole run, beaten by scripted input
   rooftops.rs      the Rooftops map
   rooftops_tests.rs every Rooftops route, beaten by scripted input
   moves.rs         the Moves map (springboard, beam, swing pole, zipline)
@@ -307,4 +329,4 @@ tools/me-extract/  scripts that read movement values out of Mirror's Edge's TdGa
 
 ## Screenshot mode
 
-`FAITH_CAPTURE=shots cargo run --release` (PowerShell: `$env:FAITH_CAPTURE="shots"; cargo run --release`) plays a scripted sprint, vault, slide, dodge, wallrun, wallclimb and ledge hang, saves a PNG mid-move for each into `shots/`, and quits. `FAITH_CAPTURE_FROM=5` starts from a later move. Add `FAITH_CAPTURE_TOUR=1` to photograph each Rooftops checkpoint instead, or `FAITH_CAPTURE_MOVES=1` to shoot the springboard, balance beam, swing, zipline and a kick on the Moves map. `FAITH_CAPTURE_SLIDE=1` slides down a Springboard-map lane and shoots what each key does mid-slide (look left/right, Q, F, A, S, jump, let go of crouch, look down); `FAITH_CAPTURE_DELAY=<frames>` sets how long after the key. `FAITH_CAPTURE_LOOK=1` shoots looking down in steps, standing and running. `FAITH_MAP=1` starts the game on the Moves map, `FAITH_MAP=2` on Springboard. Handy for checking the level renders after changes.
+`FAITH_CAPTURE=shots cargo run --release` (PowerShell: `$env:FAITH_CAPTURE="shots"; cargo run --release`) plays a scripted sprint, vault, slide, dodge, wallrun, wallclimb and ledge hang, saves a PNG mid-move for each into `shots/`, and quits. `FAITH_CAPTURE_FROM=5` starts from a later move. Add `FAITH_CAPTURE_TOUR=1` to photograph each Rooftops checkpoint instead, or `FAITH_CAPTURE_MOVES=1` to shoot the springboard, balance beam, swing, zipline and a kick on the Moves map. `FAITH_CAPTURE_SLIDE=1` slides down a Springboard-map lane and shoots what each key does mid-slide (look left/right, Q, F, A, S, jump, let go of crouch, look down); `FAITH_CAPTURE_DELAY=<frames>` sets how long after the key. `FAITH_CAPTURE_LOOK=1` shoots looking down in steps, standing and running. `FAITH_MAP=0` starts the game on Rooftops, `FAITH_MAP=1` on the Moves map, `FAITH_MAP=2` on Springboard, `FAITH_MAP=3` on Cleveland (the default; a map's name works too). With `FAITH_CAPTURE_TOUR=1`, `FAITH_MAP=3` photographs the Cleveland checkpoints. `FAITH_CAPTURE_YAW=<degrees>` (right is positive) and `FAITH_CAPTURE_PITCH=<degrees>` (up) turn the tour's camera to shoot the scenery beside the route. Handy for checking the level renders after changes.

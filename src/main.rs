@@ -26,7 +26,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use faith_move::greybox::{self, Level, Look};
-use faith_move::{moves, rooftops, springboard, Fixture};
+use faith_move::{cleveland, moves, rooftops, springboard, Fixture};
 use faith_move::{Aabb, BoxWorld, CameraFx, Controller, Shot, Event as MoveEvent, Input as MoveInput, State as MoveState, Tuning};
 
 fn main() {
@@ -107,7 +107,9 @@ struct Game {
 
 /// The maps, in the order M cycles through them.
 // Training stays last: the screenshot capture scripts its moves on it.
-const LEVELS: [fn() -> Level; 4] = [rooftops::rooftops, moves::moves, springboard::springboard, greybox::greybox];
+const LEVELS: [fn() -> Level; 5] = [rooftops::rooftops, moves::moves, springboard::springboard, cleveland::cleveland, greybox::greybox];
+/// The map the game starts on (Cleveland) when FAITH_MAP doesn't pick one.
+const DEFAULT_LEVEL: usize = 3;
 
 /// Marks the boxes of the current map (despawned when switching maps).
 #[derive(Component)]
@@ -122,6 +124,12 @@ struct LevelMats {
     prop: Handle<StandardMaterial>,
     finish: Handle<StandardMaterial>,
     skyline: Handle<StandardMaterial>,
+    /// The Cuyahoga and Lake Erie.
+    water: Handle<StandardMaterial>,
+    /// Parks and ball fields.
+    green: Handle<StandardMaterial>,
+    /// String lights, the chandelier, lit signs.
+    lights: Handle<StandardMaterial>,
     /// Zipline cables and swing bars.
     metal: Handle<StandardMaterial>,
 }
@@ -135,6 +143,9 @@ fn spawn_level(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &LevelM
             Look::Prop => mats.prop.clone(),
             Look::Finish => mats.finish.clone(),
             Look::Skyline => mats.skyline.clone(),
+            Look::Water => mats.water.clone(),
+            Look::Green => mats.green.clone(),
+            Look::Lights => mats.lights.clone(),
         };
         commands.spawn((LevelGeom, Mesh3d(meshes.add(box_mesh(b))), MeshMaterial3d(material)));
     }
@@ -237,8 +248,12 @@ fn setup_world(
         LEVELS.len() - 1
     } else if let Some(i) = std::env::var("FAITH_MAP").ok().and_then(|v| v.parse::<usize>().ok()) {
         i.min(LEVELS.len() - 1)
+    } else if let Some(i) = std::env::var("FAITH_MAP").ok().and_then(|v| LEVELS.iter().position(|f| f().name.eq_ignore_ascii_case(v.trim()))) {
+        i
+    } else if std::env::var_os("FAITH_CAPTURE").is_some() {
+        0 // the tour photographs Rooftops unless FAITH_MAP says otherwise
     } else {
-        0
+        DEFAULT_LEVEL
     };
     let level = LEVELS[level_index]();
     let world = level.world();
@@ -271,7 +286,19 @@ fn setup_world(
         perceptual_roughness: 0.4,
         ..default()
     });
-    let mats = LevelMats { roof, wall, runner, prop, finish, skyline, metal };
+    let water = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.16, 0.38, 0.52),
+        perceptual_roughness: 0.12,
+        reflectance: 0.6,
+        ..default()
+    });
+    let green = materials.add(mat(Color::srgb(0.36, 0.62, 0.30), LinearRgba::BLACK, 0.95));
+    let lights = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.86, 0.55),
+        emissive: LinearRgba::rgb(4.0, 2.6, 1.0),
+        ..default()
+    });
+    let mats = LevelMats { roof, wall, runner, prop, finish, skyline, water, green, lights, metal };
     spawn_level(&mut commands, &mut meshes, &mats, &level);
     commands.insert_resource(mats);
 
@@ -504,7 +531,7 @@ Shift / C crouch, slide, roll (tap before landing)
 A or D + Space dodge (look 90 right, dodge left = top speed)
 Q 180 turn (on a wall: climb, Q, Space to kick)  |  Left mouse (or F) attack, barge doors  |  G idle
 Balance beam: left/right against the lean  |  Swing: hold W, Space on the forward swing
-Left Alt Reaction Time  |  R respawn  |  1-6 checkpoints  |  M next map  |  F1 help  |  F2 ME/procedural  |  Esc mouse
+Left Alt Reaction Time  |  R respawn  |  1-9, 0 checkpoints  |  M next map  |  F1 help  |  F2 ME/procedural  |  Esc mouse
 Pad: sticks  |  A/LB jump  |  B/LT crouch  |  Y turn  |  X kick  |  Select respawn";
 
 // ------------------------------------------------------------------ systems
@@ -639,7 +666,18 @@ fn play(
     }
 
     // ---- checkpoints / teleports
-    let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6];
+    let digits = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+        KeyCode::Digit0,
+    ];
     for (i, k) in digits.iter().enumerate() {
         if keys.just_pressed(*k) && i < game.level.checkpoints.len() {
             game.checkpoint = i;
@@ -1028,10 +1066,13 @@ mod capture {
             cap.frame += 1;
             if cap.frame == 1 {
                 let cp = game.level.checkpoints[cap.stage].clone();
+                // FAITH_CAPTURE_YAW / _PITCH (degrees; right and up are positive) turn the view
+                // off the run's direction, to photograph the scenery beside it.
+                let deg = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).map(f32::to_radians);
                 game.ctrl.spawn = cp.spawn;
-                game.ctrl.spawn_yaw = cp.yaw;
+                game.ctrl.spawn_yaw = cp.yaw - deg("FAITH_CAPTURE_YAW").unwrap_or(0.0);
                 game.ctrl.respawn();
-                game.ctrl.pitch = -0.12;
+                game.ctrl.pitch = deg("FAITH_CAPTURE_PITCH").unwrap_or(-0.12);
                 game.checkpoint = cap.stage;
                 game.locked = true;
                 game.scripted = Some(MoveInput::default());

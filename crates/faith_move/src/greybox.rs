@@ -23,6 +23,12 @@ pub enum Look {
     Finish,
     /// Scenery far away; has collision but you'll never reach it.
     Skyline,
+    /// Rivers and lakes (the Cuyahoga, Lake Erie).
+    Water,
+    /// Grass: parks, ball fields.
+    Green,
+    /// Warm lit bulbs and crystals (string lights, a chandelier, lit signs).
+    Lights,
 }
 
 #[derive(Clone, Debug)]

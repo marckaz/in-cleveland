@@ -31,7 +31,7 @@ from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 from shapely.ops import nearest_points, unary_union
 from shapely.validation import make_valid
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "data/osm/cleveland.json"
+SRC = sys.argv[1] if len(sys.argv) > 1 else "data/osm/downtown.json"
 DST = sys.argv[2] if len(sys.argv) > 2 else "crates/faith_move/data/downtown.bin"
 
 # The origin: the middle of Public Square. x is east, z is south (so north is -z), in metres.

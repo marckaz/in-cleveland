@@ -12,8 +12,11 @@ import time
 import urllib.parse
 import urllib.request
 
+REGIONS = json.load(open(__import__("os").path.join(__import__("os").path.dirname(__file__), "regions.json")))
+# Which region: `fetch.py <region> [out.json]` (default downtown).
+REGION = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in REGIONS else "downtown"
 # south, west, north, east
-BBOX = (41.4800, -81.7120, 41.5130, -81.6740)
+BBOX = tuple(REGIONS[REGION]["bbox"])
 MIRRORS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
@@ -78,7 +81,8 @@ def main():
         out[name] = query(f"[out:json][timeout:180];{body}")["elements"]
         note(f"{name}: {len(out[name])} elements")
         time.sleep(4)
-    path = sys.argv[1] if len(sys.argv) > 1 else "data/osm/cleveland.json"
+    args = [a for a in sys.argv[1:] if a not in REGIONS]
+    path = args[0] if args else f"data/osm/{REGION}.json"
     __import__("os").makedirs(__import__("os").path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         json.dump(out, f, separators=(",", ":"))

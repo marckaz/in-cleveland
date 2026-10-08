@@ -1,27 +1,38 @@
-# Downloads downtown Cleveland from OpenStreetMap into data/osm/cleveland.json and commits it.
-# Run it by hand (Actions > Fetch OpenStreetMap > Run workflow) to refresh the map data;
-# then `python3 tools/osm/bake.py` turns it into the Downtown map.
-name: Fetch OpenStreetMap
+# Downloads each region's map data, terrain and aerial photos into data/ and commits them.
+# Run it by hand (Actions > Fetch map data > Run workflow), or it runs when the fetch scripts
+# or regions.json change. Then `python3 tools/osm/bake.py <region>` builds the maps.
+name: Fetch map data
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [tools/osm/fetch.py]
+    paths: [tools/osm/fetch.py, tools/osm/regions.json, tools/geo/fetch_geo.py]
 
 permissions:
   contents: write
+
+concurrency:
+  group: fetch
+  cancel-in-progress: false
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 tools/osm/fetch.py data/osm/cleveland.json
+      - run: pip install pillow
+      - name: Fetch every region
+        run: |
+          for r in $(python3 -c "import json;print(' '.join(json.load(open('tools/osm/regions.json'))))"); do
+            python3 tools/geo/fetch_geo.py "$r"
+            [ -f "data/osm/$r.json" ] && [ "$r" = "downtown" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ] || python3 tools/osm/fetch.py "$r"
+          done
       - name: Commit the data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/osm/cleveland.json
-          git diff --cached --quiet || git commit -m "Refresh OpenStreetMap data for downtown Cleveland"
+          git add data/
+          git diff --cached --quiet || git commit -m "Refresh map data: OpenStreetMap, terrain and aerial photos"
+          git pull --rebase -q origin main
           git push

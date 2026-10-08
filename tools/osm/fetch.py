@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Download downtown Cleveland from OpenStreetMap (Overpass API) into data/osm/cleveland.json.
 
-Buildings (and their 3D parts), streets, water and parks, from the West Side Market to
+Buildings (and their 3D parts), streets, water, parks and street furniture (trees, lamps,
+benches, bus stops), from the West Side Market to
 Playhouse Square and the lakefront. Run by .github/workflows/osm.yml; `bake.py` turns the
 result into the game's map. Map data (c) OpenStreetMap contributors, ODbL.
 """
@@ -53,6 +54,7 @@ def main():
         "buildings": f'(way["building"]({bb});relation["building"]({bb});way["building:part"]({bb});relation["building:part"]({bb}););out tags geom;',
         "streets": f'(way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|living_street|pedestrian|service)$"]({bb}););out tags geom;',
         "water": f'(way["natural"="water"]({bb});relation["natural"="water"]({bb});way["waterway"="riverbank"]({bb});way["natural"="coastline"]({bb});way["waterway"="river"]({bb}););out tags geom({bb});',
+        "furniture": f'(node["natural"="tree"]({bb});node["highway"="street_lamp"]({bb});node["amenity"="bench"]({bb});node["highway"="bus_stop"]({bb});node["emergency"="fire_hydrant"]({bb});node["amenity"="waste_basket"]({bb});node["amenity"="bicycle_parking"]({bb});way["natural"="tree_row"]({bb}););out tags geom;',
         "green": f'(way["leisure"~"^(park|pitch|garden)$"]({bb});relation["leisure"="park"]({bb});way["landuse"~"^(grass|recreation_ground)$"]({bb}););out tags geom;',
     }
     out = {"bbox": BBOX, "attribution": "Map data (c) OpenStreetMap contributors, ODbL 1.0"}

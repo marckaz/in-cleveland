@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [tools/osm/fetch.py, tools/osm/regions.json, tools/geo/fetch_geo.py]
+    paths: [tools/osm/fetch.py, tools/osm/regions.json, tools/geo/fetch_geo.py, tools/geo/fetch_footprints.py]
 
 permissions:
   contents: write
@@ -22,6 +22,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install pillow
+      - name: Fetch building footprints (fills OpenStreetMap's gaps)
+        run: python3 tools/geo/fetch_footprints.py
       - name: Fetch every region
         run: |
           for r in $(python3 -c "import json;print(' '.join(json.load(open('tools/osm/regions.json'))))"); do
@@ -33,6 +35,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/
-          git diff --cached --quiet || git commit -m "Refresh map data: OpenStreetMap, terrain and aerial photos"
+          git diff --cached --quiet || git commit -m "Refresh map data: OpenStreetMap, footprints, terrain and aerial photos"
           git pull --rebase -q origin main
           git push

@@ -241,7 +241,7 @@ Three neighbourhoods at true scale, built by the same code (`crates/faith_move/s
 - **Ohio City & Tremont**, about 4.5 km by 4 km: the West Side Market, Lorain Ave, Hingetown, Franklin Blvd, Duck Island, Professor Ave, Lincoln Park and Clark Ave, with the valley between them. `?map=westside`.
 - **Lakewood**, about 4.5 km by 2.5 km: Detroit Ave from W 117th west, Madison, Clifton Blvd, Belle Ave and Lakewood Park on the bluffs. `?map=lakewood`.
 
-Every building stands on its real footprint at its real height, from [OpenStreetMap](https://www.openstreetmap.org/copyright): OSM's `height` where it has one, otherwise `building:levels` x 3.5 m, otherwise a guess from the kind of building (most of the West Side and Lakewood are houses, two and a half storeys).
+Every building stands on its real footprint at its real height, from [OpenStreetMap](https://www.openstreetmap.org/copyright): OSM's `height` where it has one, otherwise `building:levels` x 3.5 m, otherwise a guess from the kind of building (most of the West Side and Lakewood are houses, two and a half storeys). Where OpenStreetMap hasn't mapped the buildings yet (most of north Lakewood's houses, about 11,000 of them), the gaps are filled from [Microsoft's Global ML Building Footprints](https://github.com/microsoft/GlobalMLBuildingFootprints), with their estimated heights, but only where OSM has nothing.
 
 **The ground** is real: heights from the USGS 3D Elevation Program (via the AWS Terrain Tiles), on a 16 m grid. Buildings stand on it, the lake and river sit at Lake Erie's level (174 m), and you collide with it as a heightfield, so you can't sink through it on a slope. **Aerial photos** from the USGS National Map (public domain, about 2 m per pixel) are laid over it in 512 m tiles (`assets/aerial/<region>/`), loaded as you play.
 
@@ -255,13 +255,13 @@ It's a free run: no course and no finish. **1–0** jump between landmarks (on D
 
 How it's made:
 
-1. `tools/osm/regions.json` lists the regions (bounding box and origin). `tools/osm/fetch.py <region>` downloads each from the Overpass API into `data/osm/<region>.json`; `tools/geo/fetch_geo.py <region>` downloads its elevation (`data/terrain/`) and aerial photo (`data/aerial/`). The **Fetch map data** workflow runs both on GitHub and commits the result.
+1. `tools/osm/regions.json` lists the regions (bounding box and origin). `tools/osm/fetch.py <region>` downloads each from the Overpass API into `data/osm/<region>.json`; `tools/geo/fetch_geo.py <region>` downloads its elevation (`data/terrain/`) and aerial photo (`data/aerial/`); `tools/geo/fetch_footprints.py` downloads Microsoft's footprints for all of them (`data/footprints/`). The **Fetch map data** workflow runs both on GitHub and commits the result.
 2. `tools/osm/bake.py <region>` (needs `pip install mapbox-earcut shapely numpy pillow`) turns that into `crates/faith_move/data/<region>.bin`: the ground grid, buildings as triangulated prisms standing on it (3D `building:part`s stand in for the outlines they fill), the ziplines, ladders, objects and spawn points; and cuts the photo into `assets/aerial/<region>/`.
 3. The game reads the file at startup, and collides with the buildings as triangles (`MeshWorld`), so walls at any angle take wallruns, climbs and ledge grabs.
 
 `crates/faith_move/src/downtown_tests.rs` checks, on each region, that every spawn point holds you, the ground is where the elevation data says and you stay on it running up and down slopes, the ladders get you onto their roofs, every zipline carries you across and sets you down on the far roof, cars are solid, and a fall off a tall roof kills.
 
-Map data © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright). Elevation: USGS 3DEP and the other sources of the [AWS Terrain Tiles](https://github.com/tilezen/joerd/blob/master/docs/attribution.md). Aerial photos: USGS The National Map (public domain).
+Map data © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright). Extra building footprints: Microsoft, also under the ODbL. Elevation: USGS 3DEP and the other sources of the [AWS Terrain Tiles](https://github.com/tilezen/joerd/blob/master/docs/attribution.md). Aerial photos: USGS The National Map (public domain).
 
 ### Rooftops
 

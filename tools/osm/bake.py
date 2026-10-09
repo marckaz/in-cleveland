@@ -399,6 +399,32 @@ def main():
                     parts[i] = ({**parts[i][0], "name": t["name"]}, parts[i][1])
         if covered < 0.6 * p.area:
             kept.append((t, p))
+
+    # ---- OpenStreetMap's gaps (whole streets of houses unmapped) filled from Microsoft's
+    # machine-learned footprints, wherever OSM has nothing there
+    fp = f"data/footprints/{REGION}.json"
+    if os.path.exists(fp):
+        have = [p for _, p in kept + parts]
+        have_tree = STRtree(have) if have else None
+        added = 0
+        for hgt, rng in json.load(open(fp))["buildings"]:
+            if len(rng) < 4:
+                continue
+            try:
+                p = make_valid(Polygon([proj(lat, lon) for lon, lat in rng]))
+            except Exception:
+                continue
+            p = max(explode(p), key=lambda g: g.area, default=None)
+            if p is None or p.area < 15 or not area_box.contains(p.centroid):
+                continue
+            if have_tree is not None and any(have[i].intersects(p) and have[i].intersection(p).area > 0.1 * p.area for i in have_tree.query(p)):
+                continue
+            t = {"building": "house" if p.area < 260 else "yes"}
+            if hgt and hgt > 2.5:
+                t["height"] = str(min(hgt, 60.0))
+            kept.append((t, p))
+            added += 1
+        print(f"footprints: {added} buildings added where OpenStreetMap has none")
     blds = []
     for t, p in kept + parts:
         if t.get("building") in ("construction", "roof") or t.get("building:part") == "roof":

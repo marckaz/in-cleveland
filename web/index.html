@@ -96,7 +96,9 @@
     <p class="tag">Rooftop parkour from the West Side Market to Playhouse Square: across Ohio City, over the Cuyahoga, past Terminal Tower, down Euclid.</p>
     <nav class="maps" aria-label="Map">
       <a id="map-cleveland" href="?map=cleveland"><b>The course</b><span>West Side Market to Playhouse Square, every move</span></a>
-      <a id="map-downtown" href="?map=downtown"><b>Real downtown</b><span>The actual city from OpenStreetMap, true scale, free run</span></a>
+      <a id="map-downtown" href="?map=downtown"><b>Downtown</b><span>The real city: Terminal Tower, Key Tower, the Flats</span></a>
+      <a id="map-westside" href="?map=westside"><b>Ohio City &amp; Tremont</b><span>West Side Market, Lorain, Professor Ave, Lincoln Park</span></a>
+      <a id="map-lakewood" href="?map=lakewood"><b>Lakewood</b><span>Detroit Ave, Madison, the bluffs at Lakewood Park</span></a>
     </nav>
     <div class="bar"><b id="fill"></b></div>
     <div class="status"><span id="msg">Loading the city…</span><span id="pct"></span></div>
@@ -108,10 +110,13 @@
       <tr><td>Kick, barge doors</td><td>Left click or <kbd>F</kbd></td></tr>
       <tr><td>Respawn / checkpoints</td><td><kbd>R</kbd> / <kbd>1</kbd>–<kbd>0</kbd></td></tr>
       <tr><td>Menu / next map</td><td><kbd>Esc</kbd> / <kbd>M</kbd></td></tr>
+      <tr><td>Debug camera (fly, <kbd>T</kbd> drops you there)</td><td><kbd>F3</kbd></td></tr>
     </table>
     <p class="foot">Desktop browser with a keyboard and mouse, or a gamepad. Movement from
       <a href="https://github.com/tnrjns/faith-runner">faith-runner</a> by tnrjns.
-      Landmarks are placed in their real order, but the distances are squeezed.</p>
+      On the course, landmarks are in their real order but the distances are squeezed. The city
+      maps are true scale: buildings &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>
+      contributors, ground and aerial photos from the USGS (public domain).</p>
   </div>
 </div>
 
@@ -120,7 +125,8 @@
   import init from "./in_cleveland.js?v=__BUILD__";
 
   const want = (new URLSearchParams(location.search).get("map") || "cleveland").toLowerCase();
-  const current = document.getElementById(want === "downtown" ? "map-downtown" : "map-cleveland");
+  const alias = { tremont: "westside", ohiocity: "westside", "ohio-city": "westside", course: "cleveland" };
+  const current = document.getElementById("map-" + (alias[want] || want)) || document.getElementById("map-cleveland");
   if (current) current.setAttribute("aria-current", "true");
 
   const fill = document.getElementById("fill");

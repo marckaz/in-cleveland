@@ -7,19 +7,30 @@
 //! from roof to lower roof across the gaps. Free run: no course, no finish; 1-0 jump between
 //! landmarks.
 //!
-//! Baked by `tools/osm/bake.py` from `data/osm/cleveland.json` (fetched by
-//! `tools/osm/fetch.py`) into `data/downtown.bin`, read here. Map data (c) OpenStreetMap
-//! contributors, ODbL 1.0.
+//! The same code builds Ohio City & Tremont and Lakewood. Each stands on the real ground
+//! (USGS elevations via AWS Terrain Tiles) under real aerial photos (USGS, public domain).
+//!
+//! Baked by `tools/osm/bake.py <region>` from `data/osm/<region>.json` (fetched by
+//! `tools/osm/fetch.py`) and `data/terrain`, `data/aerial` (fetched by `tools/geo/fetch_geo.py`)
+//! into `data/<region>.bin`, read here. Map data (c) OpenStreetMap contributors, ODbL 1.0.
+//!
+//! Roofs take their colour from the aerial photo.
 //!
 //! x is east and z is south (north is −Z), in metres from the middle of Public Square.
 
 use glam::Vec3;
 
 use crate::climb::Ladder;
-use crate::greybox::{Level, Look, TriMesh};
+use crate::greybox::{Ground, Level, Look, TriMesh};
 use crate::world::{Aabb, Fixture, MeshWorld};
 
-static DATA: &[u8] = include_bytes!("../data/downtown.bin");
+static DOWNTOWN: &[u8] = include_bytes!("../data/downtown.bin");
+static WESTSIDE: &[u8] = include_bytes!("../data/westside.bin");
+static LAKEWOOD: &[u8] = include_bytes!("../data/lakewood.bin");
+
+/// The city regions: (key, name). The key names the baked file, the aerial photo folder and
+/// the `?map=` value.
+pub const REGIONS: [(&str, &str); 3] = [("downtown", "Downtown"), ("westside", "Ohio City & Tremont"), ("lakewood", "Lakewood")];
 
 /// Heights of the flat shapes on the ground (apart, so they don't flicker into each other).
 const ROAD_Y: f32 = 0.03;
@@ -73,6 +84,8 @@ pub struct Building {
     pub top: f32,
     /// Outer ring then holes, in (x, z).
     pub rings: Vec<Vec<(f32, f32)>>,
+    /// The roof's colour in the aerial photo (linear RGB), where there is one.
+    pub roof: Option<[f32; 3]>,
 }
 
 impl Building {
@@ -100,6 +113,11 @@ fn inside_ring(r: &[(f32, f32)], x: f32, z: f32) -> bool {
 /// Everything in the baked file.
 pub struct Map {
     pub bounds: (f32, f32, f32, f32),
+    /// The terrain (flat, all zeros, when none was downloaded) and the photo tiles on it.
+    pub ground: Ground,
+    pub real_ground: bool,
+    /// Walls standing on the ground (false: a part held up off it, which gets a floor).
+    pub grounded: Vec<bool>,
     pub buildings: Vec<(Look, Building, Vec<[u16; 3]>)>,
     pub flats: Vec<(u8, Vec<Vec<(f32, f32)>>, Vec<[u32; 3]>)>,
     pub zips: Vec<(Vec3, Vec3)>,
@@ -143,22 +161,57 @@ pub mod kind {
     pub const BIN: u8 = 15;
 }
 
+/// Downtown's map data.
 pub fn read() -> Map {
-    let mut r = Reader { b: DATA, at: 0 };
-    assert_eq!(r.take(4), b"CLE3", "downtown.bin: wrong format (re-run tools/osm/bake.py)");
+    read_key("downtown")
+}
+
+/// A region's map data, by key (see [`REGIONS`]).
+pub fn read_key(key: &str) -> Map {
+    let data = match key {
+        "downtown" => DOWNTOWN,
+        "westside" => WESTSIDE,
+        "lakewood" => LAKEWOOD,
+        _ => panic!("no region {key}"),
+    };
+    read_region(key, data)
+}
+
+/// A region's baked map (`tools/osm/bake.py <region>`).
+pub fn read_region(key: &str, data: &[u8]) -> Map {
+    let mut r = Reader { b: data, at: 0 };
+    assert_eq!(r.take(4), b"CLE5", "{key}.bin: wrong format (re-run tools/osm/bake.py {key})");
     let bounds = (r.f32(), r.f32(), r.f32(), r.f32());
+    let (gx0, gz0, cell) = (r.f32(), r.f32(), r.f32());
+    let (nx, nz) = (r.u32() as usize, r.u32() as usize);
+    let real_ground = r.u8() != 0;
+    let lake = r.f32();
+    let heights = (0..nx * nz).map(|_| r.f32()).collect();
+    let tile = r.f32();
+    let tiles = (0..r.u32()).map(|_| {
+        let (ix, iz) = (r.u16() as u32, r.u16() as u32);
+        (ix, iz, format!("aerial/{key}/{ix}_{iz}.jpg"))
+    }).collect();
+    let ground = Ground { x0: gx0, z0: gz0, cell, nx, nz, heights, lake: real_ground.then_some(lake), tile, tiles };
     let mut buildings = vec![];
+    let mut grounded = vec![];
     for _ in 0..r.u32() {
-        let look = match r.u8() {
+        let byte = r.u8();
+        grounded.push(byte & 0x80 == 0);
+        let look = match byte & 0x7f {
             1 => Look::Stone,
             2 => Look::Glass,
             _ => Look::Wall,
         };
         let (base, top) = (r.f32(), r.f32());
         let name = r.str();
+        let (cr, cg, cb) = (r.u8(), r.u8(), r.u8());
+        // sRGB bytes to linear (vertex colours are linear); all zero: no photo over it.
+        let lin = |c: u8| (c as f32 / 255.0).powf(2.2);
+        let roof = (cr | cg | cb != 0).then(|| [lin(cr), lin(cg), lin(cb)]);
         let rings = (0..r.u16()).map(|_| (0..r.u16()).map(|_| r.xz()).collect()).collect();
         let tris = (0..r.u32()).map(|_| [r.u16(), r.u16(), r.u16()]).collect();
-        buildings.push((look, Building { name, base, top, rings }, tris));
+        buildings.push((look, Building { name, base, top, rings, roof }, tris));
     }
     let mut flats = vec![];
     for _ in 0..r.u32() {
@@ -195,7 +248,7 @@ pub fn read() -> Map {
             (name, p, r.f32())
         })
         .collect();
-    Map { bounds, buildings, flats, zips, ladders, props, reachable, spots }
+    Map { bounds, ground, real_ground, grounded, buildings, flats, zips, ladders, props, reachable, spots }
 }
 
 /// Every triangle of a closed shape wound to face away from its `centre`.
@@ -230,16 +283,42 @@ fn hash(i: usize) -> f32 {
 }
 
 pub fn downtown() -> Level {
-    let map = read();
-    let mut l = Level { name: "Downtown", fog: Some((250.0, 2200.0)), ..Level::default() };
+    region("Downtown", read())
+}
+
+/// Ohio City and Tremont: the West Side Market, Lorain and Professor, Lincoln Park, the
+/// valley between them and the bluffs over the Flats.
+pub fn westside() -> Level {
+    region("Ohio City & Tremont", read_key("westside"))
+}
+
+/// Lakewood: Detroit Avenue, Madison, Clifton and the bluffs at Lakewood Park.
+pub fn lakewood() -> Level {
+    region("Lakewood", read_key("lakewood"))
+}
+
+/// A city map from its baked data.
+pub fn region(name: &'static str, map: Map) -> Level {
+    let mut l = Level { name, fog: Some((250.0, 2200.0)), ..Level::default() };
     let (x0, z0, x1, z1) = map.bounds;
 
-    // ---- the ground, and a wall of fog-coloured cliffs past the edge of the data
-    l.add(Look::Roof, [x0 - 400.0, -2.0, z0 - 400.0], [x1 + 400.0, 0.0, z1 + 400.0]);
+    // ---- the ground
+    if map.real_ground {
+        let g = &map.ground;
+        // The terrain, collided with as triangles (drawn tile by tile with its photos).
+        // The terrain itself collides as a heightfield (Level::mesh_world) and is drawn tile by
+        // tile with its photos (the game).
+        // Under it all, past the edge of the data, so you can't fall forever.
+        let floor = g.lake.unwrap_or(-50.0) - 1.4;
+        l.add(Look::Skyline, [x0 - 400.0, floor - 2.0, z0 - 400.0], [x1 + 400.0, floor, z1 + 400.0]);
+        l.ground = Some(map.ground.clone());
+    } else {
+        l.add(Look::Roof, [x0 - 400.0, -2.0, z0 - 400.0], [x1 + 400.0, 0.0, z1 + 400.0]);
+    }
 
     // ---- buildings
-    let mut walls: [TriMesh; 3] = [Look::Wall, Look::Stone, Look::Glass].map(|look| TriMesh { look, solid: true, tris: vec![], tint: vec![], colors: vec![] });
-    let mut roofs = TriMesh { look: Look::Roof, solid: true, tris: vec![], tint: vec![], colors: vec![] };
+    let mut walls: [TriMesh; 3] = [Look::Wall, Look::Stone, Look::Glass].map(|look| TriMesh { look, solid: true, tris: vec![], tint: vec![], colors: vec![], hidden: false });
+    let mut roofs = TriMesh { look: Look::Roof, solid: true, tris: vec![], tint: vec![], colors: vec![], hidden: false };
     for (i, (look, b, tris)) in map.buildings.iter().enumerate() {
         let wi = match look {
             Look::Stone => 1,
@@ -278,8 +357,11 @@ pub fn downtown() -> Level {
                 Vec3::new(x, b.top, z)
             };
             roofs.tris.push(facing([p(t[0]), p(t[1]), p(t[2])], Vec3::Y));
-            roofs.tint.push(0.9 + 0.1 * hash(i + 7));
-            if b.base > 0.0 {
+            let tint = 0.9 + 0.1 * hash(i + 7);
+            roofs.tint.push(tint);
+            // Seen from above, the city matches the photo on the ground.
+            roofs.colors.push(b.roof.map_or([tint; 3], |c| c.map(|v| (v * 1.25).min(1.0))));
+            if !map.grounded[i] {
                 let p = |k: u16| {
                     let (x, z) = flat[k as usize];
                     Vec3::new(x, b.base, z)
@@ -294,7 +376,7 @@ pub fn downtown() -> Level {
 
     // ---- streets, parks and water, painted on the ground
     for (look, y, kind) in [(Look::Road, ROAD_Y, 0u8), (Look::Green, GREEN_Y, 2), (Look::Water, WATER_Y, 1)] {
-        let mut m = TriMesh { look, solid: false, tris: vec![], tint: vec![], colors: vec![] };
+        let mut m = TriMesh { look, solid: false, tris: vec![], tint: vec![], colors: vec![], hidden: false };
         for (k, rings, tris) in &map.flats {
             if *k != kind {
                 continue;
@@ -313,7 +395,7 @@ pub fn downtown() -> Level {
     }
 
     // ---- parkour: ziplines (with masts) and ladders
-    let mut props = TriMesh { look: Look::Runner, solid: false, tris: vec![], tint: vec![], colors: vec![] };
+    let mut props = TriMesh { look: Look::Runner, solid: false, tris: vec![], tint: vec![], colors: vec![], hidden: false };
     for &(a, b) in &map.zips {
         l.fixtures.push(Fixture::ZipLine { a, b });
         let along = Vec3::new(b.x - a.x, 0.0, b.z - a.z).normalize_or_zero();
@@ -330,7 +412,7 @@ pub fn downtown() -> Level {
     props.tint = vec![1.0; props.tris.len()];
     l.meshes.push(props);
     // Ladders: rails as boxes, rungs as flat strips (there are over a thousand of them).
-    let mut iron = TriMesh { look: Look::Paint, solid: false, tris: vec![], tint: vec![], colors: vec![] };
+    let mut iron = TriMesh { look: Look::Paint, solid: false, tris: vec![], tint: vec![], colors: vec![], hidden: false };
     for &(base, top, normal) in &map.ladders {
         let ladder = Ladder { base, top, normal, pipe: false, exit: true };
         for (k, (a, b, thick)) in ladder.rods().into_iter().enumerate() {
@@ -349,9 +431,9 @@ pub fn downtown() -> Level {
     l.ladders_in_meshes = true;
 
     // ---- objects: rooftop clutter, cars, dumpsters, trees, lamps, benches, bus shelters
-    let mut solid = TriMesh { look: Look::Paint, solid: true, tris: vec![], tint: vec![], colors: vec![] };
-    let mut soft = TriMesh { look: Look::Paint, solid: false, tris: vec![], tint: vec![], colors: vec![] };
-    let mut lit = TriMesh { look: Look::Lights, solid: false, tris: vec![], tint: vec![], colors: vec![] };
+    let mut solid = TriMesh { look: Look::Paint, solid: true, tris: vec![], tint: vec![], colors: vec![], hidden: false };
+    let mut soft = TriMesh { look: Look::Paint, solid: false, tris: vec![], tint: vec![], colors: vec![], hidden: false };
+    let mut lit = TriMesh { look: Look::Lights, solid: false, tris: vec![], tint: vec![], colors: vec![], hidden: false };
     for p in &map.props {
         let half = Vec3::new(p.size.x, p.size.y * 0.5, p.size.z);
         let centre = p.base + Vec3::Y * half.y;

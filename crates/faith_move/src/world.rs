@@ -340,12 +340,19 @@ pub struct MeshWorld {
     pub tris: Vec<[Vec3; 3]>,
     pub fixtures: Vec<Fixture>,
     grid: Option<Grid>,
+    /// Real ground under it all, solid all the way down.
+    pub terrain: Option<Heightfield>,
 }
 
 impl MeshWorld {
     pub fn new(tris: Vec<[Vec3; 3]>, fixtures: Vec<Fixture>) -> Self {
         let grid = Grid::build(4.0, tris.iter().map(tri_bounds));
-        MeshWorld { tris, fixtures, grid: Some(grid) }
+        MeshWorld { tris, fixtures, grid: Some(grid), terrain: None }
+    }
+
+    pub fn with_terrain(mut self, terrain: Option<Heightfield>) -> Self {
+        self.terrain = terrain;
+        self
     }
 
     /// Two triangles making the quad `a b c d` (in order round it).
@@ -411,8 +418,147 @@ fn tri_box_overlap(t: &[Vec3; 3], c: Vec3, h: Vec3) -> bool {
     true
 }
 
+/// The height at (x, z) of a grid of heights (row by row along x, `cell` apart from (x0, z0)),
+/// on two triangles per cell split along the (0,0)-(1,1) diagonal. Outside the grid the edge
+/// carries on.
+#[allow(clippy::too_many_arguments)]
+pub fn grid_height(heights: &[f32], nx: usize, nz: usize, x0: f32, z0: f32, cell: f32, x: f32, z: f32) -> f32 {
+    let h = |i: usize, j: usize| heights[j.min(nz - 1) * nx + i.min(nx - 1)];
+    let fx = ((x - x0) / cell).clamp(0.0, nx as f32 - 1.001);
+    let fz = ((z - z0) / cell).clamp(0.0, nz as f32 - 1.001);
+    let (i, j) = (fx as usize, fz as usize);
+    let (u, v) = (fx - i as f32, fz - j as f32);
+    let (h00, h10, h01, h11) = (h(i, j), h(i + 1, j), h(i, j + 1), h(i + 1, j + 1));
+    if u >= v { h00 + u * (h10 - h00) + v * (h11 - h10) } else { h00 + v * (h01 - h00) + u * (h11 - h01) }
+}
+
+/// Ground as a grid of heights, solid below the surface. Unlike a skin of triangles, a box
+/// can't slip through it: a sweep is stopped wherever the box would sink any deeper into it
+/// than it already is.
+#[derive(Clone, Debug, Default)]
+pub struct Heightfield {
+    pub x0: f32,
+    pub z0: f32,
+    pub cell: f32,
+    pub nx: usize,
+    pub nz: usize,
+    pub heights: Vec<f32>,
+}
+
+impl Heightfield {
+    pub fn at(&self, x: f32, z: f32) -> f32 {
+        grid_height(&self.heights, self.nx, self.nz, self.x0, self.z0, self.cell, x, z)
+    }
+
+    /// The surface's normal at (x, z) (of the triangle there).
+    pub fn normal_at(&self, x: f32, z: f32) -> Vec3 {
+        let e = self.cell * 0.01;
+        let fx = ((x - self.x0) / self.cell).fract();
+        let fz = ((z - self.z0) / self.cell).fract();
+        // Differences taken inside the same triangle as (x, z).
+        let sx = if fx > 0.5 { -e } else { e };
+        let sz = if fz > 0.5 { -e } else { e };
+        let h = self.at(x, z);
+        let dx = (self.at(x + sx, z) - h) / sx;
+        let dz = (self.at(x, z + sz) - h) / sz;
+        Vec3::new(-dx, 1.0, -dz).normalize()
+    }
+
+    /// The highest ground under a box (centre `c`, half size `h`) and where it is: sampled
+    /// over the footprint finely enough to catch the creases, plus every grid point under it.
+    fn highest(&self, c: Vec3, h: Vec3) -> (f32, f32, f32) {
+        let (x0, x1, z0, z1) = (c.x - h.x, c.x + h.x, c.z - h.z, c.z + h.z);
+        let n = (((2.0 * h.x.max(h.z)) / (self.cell * 0.25)).ceil() as usize).clamp(2, 32);
+        let mut best = (f32::MIN, c.x, c.z);
+        let mut take = |x: f32, z: f32| {
+            let y = self.at(x, z);
+            if y > best.0 {
+                best = (y, x, z);
+            }
+        };
+        for a in 0..=n {
+            for b in 0..=n {
+                take(x0 + (x1 - x0) * a as f32 / n as f32, z0 + (z1 - z0) * b as f32 / n as f32);
+            }
+        }
+        let (i0, i1) = (((x0 - self.x0) / self.cell).ceil() as i64, ((x1 - self.x0) / self.cell).floor() as i64);
+        let (j0, j1) = (((z0 - self.z0) / self.cell).ceil() as i64, ((z1 - self.z0) / self.cell).floor() as i64);
+        for j in j0.max(0)..=j1.min(self.nz as i64 - 1) {
+            for i in i0.max(0)..=i1.min(self.nx as i64 - 1) {
+                take(self.x0 + i as f32 * self.cell, self.z0 + j as f32 * self.cell);
+            }
+        }
+        best
+    }
+
+    /// How deep a box is sunk into the ground (negative: how far above it).
+    fn depth(&self, c: Vec3, h: Vec3) -> f32 {
+        self.highest(c, h).0 - (c.y - h.y)
+    }
+
+    fn sweep(&self, half: Vec3, start: Vec3, delta: Vec3) -> Option<SweepHit> {
+        let allow = self.depth(start, half).max(0.0) + TOUCH;
+        let hit = |s: f32| self.depth(start + delta * s, half) > allow;
+        let len = delta.length();
+        if len < 1e-9 {
+            return None;
+        }
+        let steps = ((len / 0.25).ceil() as usize).clamp(1, 400);
+        let mut prev = 0.0f32;
+        for i in 1..=steps {
+            let s = i as f32 / steps as f32;
+            if !hit(s) {
+                prev = s;
+                continue;
+            }
+            let (mut lo, mut hi) = (prev, s);
+            for _ in 0..16 {
+                let mid = (lo + hi) * 0.5;
+                if hit(mid) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            let (_, x, z) = self.highest(start + delta * hi, half);
+            let n = self.normal_at(x, z);
+            let toward = -n.dot(delta);
+            let t = if toward > 1e-6 { (lo - 2.0 * TOUCH / toward).max(0.0) } else { lo };
+            let at = start + delta * t;
+            let support = half.x * n.x.abs() + half.y * n.y.abs() + half.z * n.z.abs();
+            return Some(SweepHit { t, normal: n, point: at - n * support });
+        }
+        None
+    }
+}
+
 impl World for MeshWorld {
     fn sweep(&self, half: Vec3, start: Vec3, delta: Vec3) -> Option<SweepHit> {
+        let mesh = self.sweep_tris(half, start, delta);
+        match (mesh, self.terrain.as_ref().and_then(|g| g.sweep(half, start, delta))) {
+            (Some(a), Some(b)) => Some(if b.t < a.t { b } else { a }),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn overlaps(&self, region: &Aabb) -> bool {
+        if self.terrain.as_ref().is_some_and(|g| g.depth(region.center(), region.size() * 0.5) > TOUCH) {
+            return true;
+        }
+        let (c, h) = (region.center(), region.size() * 0.5);
+        self.near(region).into_iter().any(|i| {
+            let t = &self.tris[i];
+            tri_bounds(t).overlaps(region) && tri_box_overlap(t, c, h)
+        })
+    }
+
+    fn fixtures(&self) -> &[Fixture] {
+        &self.fixtures
+    }
+}
+
+impl MeshWorld {
+    fn sweep_tris(&self, half: Vec3, start: Vec3, delta: Vec3) -> Option<SweepHit> {
         let a = Aabb::new(start - half, start + half);
         let region = a.union(&a.translated(delta));
         let grown = Aabb::new(region.min - Vec3::splat(0.01), region.max + Vec3::splat(0.01));
@@ -495,18 +641,6 @@ impl World for MeshWorld {
             prev = s;
         }
         None
-    }
-
-    fn overlaps(&self, region: &Aabb) -> bool {
-        let (c, h) = (region.center(), region.size() * 0.5);
-        self.near(region).into_iter().any(|i| {
-            let t = &self.tris[i];
-            tri_bounds(t).overlaps(region) && tri_box_overlap(t, c, h)
-        })
-    }
-
-    fn fixtures(&self) -> &[Fixture] {
-        &self.fixtures
     }
 }
 

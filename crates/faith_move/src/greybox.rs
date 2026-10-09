@@ -49,6 +49,47 @@ pub struct TriMesh {
     pub tint: Vec<f32>,
     /// Per-triangle colours; when present they replace `tint`.
     pub colors: Vec<[f32; 3]>,
+    /// Collided with but not drawn (the ground, drawn tile by tile with its photos instead).
+    pub hidden: bool,
+}
+
+/// A real map's ground: a grid of heights, and the aerial photo tiles to draw on it.
+#[derive(Clone, Debug, Default)]
+pub struct Ground {
+    pub x0: f32,
+    pub z0: f32,
+    pub cell: f32,
+    pub nx: usize,
+    pub nz: usize,
+    /// Row by row (z), each row along x.
+    pub heights: Vec<f32>,
+    /// The lake's (and river's) surface, drawn as water.
+    pub lake: Option<f32>,
+    /// Size of one photo tile, in metres.
+    pub tile: f32,
+    /// Each photo tile: (ix, iz, asset path), covering x0 + ix * tile.. and z0 + iz * tile..
+    pub tiles: Vec<(u32, u32, String)>,
+}
+
+impl Ground {
+    pub fn h(&self, i: usize, j: usize) -> f32 {
+        self.heights[j.min(self.nz - 1) * self.nx + i.min(self.nx - 1)]
+    }
+
+    /// The ground's height at (x, z), on the same two triangles per cell (split along the
+    /// (0,0)-(1,1) diagonal) as the mesh.
+    pub fn at(&self, x: f32, z: f32) -> f32 {
+        crate::world::grid_height(&self.heights, self.nx, self.nz, self.x0, self.z0, self.cell, x, z)
+    }
+
+    /// The ground as something to collide with.
+    pub fn heightfield(&self) -> crate::world::Heightfield {
+        crate::world::Heightfield { x0: self.x0, z0: self.z0, cell: self.cell, nx: self.nx, nz: self.nz, heights: self.heights.clone() }
+    }
+
+    pub fn corner(&self, i: usize, j: usize) -> Vec3 {
+        Vec3::new(self.x0 + i as f32 * self.cell, self.h(i, j), self.z0 + j as f32 * self.cell)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +119,8 @@ pub struct Level {
     /// The ladders are already drawn in `meshes` (a city's worth), so the renderer shouldn't
     /// draw each one again.
     pub ladders_in_meshes: bool,
+    /// Real terrain with aerial photos, for the city maps.
+    pub ground: Option<Ground>,
 }
 
 /// What a box sounds like underfoot / under hand (Mirror's Edge's
@@ -140,7 +183,8 @@ impl Level {
     /// The solid triangles, if the map has any (collide with them as well as with `world()`).
     pub fn mesh_world(&self) -> Option<crate::world::MeshWorld> {
         let tris: Vec<[Vec3; 3]> = self.meshes.iter().filter(|m| m.solid).flat_map(|m| m.tris.iter().copied()).collect();
-        (!tris.is_empty()).then(|| crate::world::MeshWorld::new(tris, vec![]))
+        let terrain = self.ground.as_ref().filter(|g| g.lake.is_some()).map(Ground::heightfield);
+        (!tris.is_empty() || terrain.is_some()).then(|| crate::world::MeshWorld::new(tris, vec![]).with_terrain(terrain))
     }
 
     pub(crate) fn paint(&mut self, look: Look, min: [f32; 3], max: [f32; 3]) {

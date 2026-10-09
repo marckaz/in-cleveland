@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Bake data/osm/cleveland.json (from fetch.py) into crates/faith_move/data/downtown.bin,
-the Downtown map: real downtown Cleveland at true scale.
+"""Bake a region (tools/osm/regions.json) into crates/faith_move/data/<region>.bin: real
+Cleveland at true scale, from OpenStreetMap, standing on its real terrain, with the aerial
+photos cut into ground tiles under assets/aerial/<region>/.
 
-    pip install mapbox-earcut shapely numpy
-    python3 tools/osm/bake.py [data/osm/cleveland.json] [crates/faith_move/data/downtown.bin]
+    pip install mapbox-earcut shapely numpy pillow
+    python3 tools/osm/bake.py [region]      (downtown, westside, lakewood)
+
+Reads data/osm/<region>.json (tools/osm/fetch.py), and data/terrain/<region>.png and
+data/aerial/<region>.jpg (tools/geo/fetch_geo.py); without the terrain the ground is flat.
 
 What it makes:
 - every building as a prism from its footprint, at its OpenStreetMap height (or `levels` x
   3.5 m, or a guess by building type where OSM has neither). Buildings drawn as 3D parts
   (Terminal Tower, Key Tower, ...) use their parts.
-- streets, water and parks as flat shapes on the ground.
+- the ground: a 16 m grid of the real terrain, with the aerial photos on it.
 - a parkour layer on top, since real streets are too wide to jump: ziplines from roof to
   lower roof across the gaps, ladders up from the street onto low roofs.
 - spawn points at landmarks.
@@ -19,6 +23,7 @@ contributors, ODbL 1.0.
 """
 import json
 import math
+import os
 import re
 import struct
 import sys
@@ -31,11 +36,15 @@ from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 from shapely.ops import nearest_points, unary_union
 from shapely.validation import make_valid
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "data/osm/downtown.json"
-DST = sys.argv[2] if len(sys.argv) > 2 else "crates/faith_move/data/downtown.bin"
+REGIONS = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "regions.json")))
+REGION = sys.argv[1] if len(sys.argv) > 1 else "downtown"
+CFG = REGIONS[REGION]
+SRC = f"data/osm/{REGION}.json"
+DST = f"crates/faith_move/data/{REGION}.bin"
+AERIAL_OUT = f"assets/aerial/{REGION}"
 
-# The origin: the middle of Public Square. x is east, z is south (so north is -z), in metres.
-LAT0, LON0 = 41.49950, -81.69370
+# The origin (Public Square for Downtown). x is east, z is south (so north is -z), in metres.
+LAT0, LON0 = CFG["origin"]
 M_LAT = 111_132.0
 M_LON = 111_320.0 * math.cos(math.radians(LAT0))
 
@@ -194,7 +203,7 @@ def height_of(t, poly):
         elif b in ("silo",):
             h = 25.0
         else:
-            in_core = CORE.contains(poly.centroid)
+            in_core = REGION == "downtown" and CORE.contains(poly.centroid)
             h = (14.0 if area < 400 else 20.0 if area < 2500 else 26.0) if in_core else (7.0 if area < 300 else 9.0)
     h = max(h, base + 2.5)
     return base, h, guessed
@@ -233,10 +242,136 @@ def tri_poly(p):
     return rings, idx.reshape(-1, 3)
 
 
+# ------------------------------------------------------------------ terrain
+
+LAKE_ASL = 174.3  # Lake Erie (and the Cuyahoga's mouth), metres above sea level
+CELL = 16.0       # the ground grid
+TILE = 512.0      # one aerial photo tile, metres a side
+
+
+class Terrain:
+    """The ground: a CELL-metre grid of heights (metres, relative to the origin's ground),
+    triangulated the way the game does it, so things placed here sit exactly on what you
+    walk on. Flat if the terrain hasn't been downloaded."""
+
+    def __init__(self, x0, z0, x1, z1):
+        self.gx0 = math.floor(x0 / CELL) * CELL
+        self.gz0 = math.floor(z0 / CELL) * CELL
+        self.nx = int(math.ceil((x1 - self.gx0) / CELL)) + 1
+        self.nz = int(math.ceil((z1 - self.gz0) / CELL)) + 1
+        self.h = np.zeros((self.nz, self.nx), dtype=np.float64)
+        self.lake = -100.0
+        self.real = False
+        png = f"data/terrain/{REGION}.png"
+        if not os.path.exists(png):
+            print("terrain: none downloaded, flat ground")
+            return
+        from PIL import Image
+        img = np.asarray(Image.open(png)).astype(np.float64) / 10.0 - 100.0
+        s, w, n, e = json.load(open(f"data/terrain/{REGION}.json"))["bbox"]
+        H, W = img.shape
+
+        def dem(x, z):
+            lon = LON0 + x / M_LON
+            lat = LAT0 - z / M_LAT
+            fx = (lon - w) / (e - w) * (W - 1)
+            fy = (n - lat) / (n - s) * (H - 1)
+            fx, fy = min(max(fx, 0), W - 1.001), min(max(fy, 0), H - 1.001)
+            i, j = int(fx), int(fy)
+            u, v = fx - i, fy - j
+            return (img[j, i] * (1 - u) * (1 - v) + img[j, i + 1] * u * (1 - v) + img[j + 1, i] * (1 - u) * v + img[j + 1, i + 1] * u * v)
+
+        ref = dem(0.0, 0.0)
+        self.lake = LAKE_ASL - ref
+        for j in range(self.nz):
+            for i in range(self.nx):
+                self.h[j, i] = max(dem(self.gx0 + i * CELL, self.gz0 + j * CELL) - ref, self.lake - 1.2)
+        self.real = True
+        print(f"terrain: {self.nx}x{self.nz} grid, ground {self.h.min():.0f} to {self.h.max():.0f} m, lake at {self.lake:.1f} m")
+
+    def ground(self, x, z):
+        fx = (x - self.gx0) / CELL
+        fz = (z - self.gz0) / CELL
+        fx = min(max(fx, 0.0), self.nx - 1.001)
+        fz = min(max(fz, 0.0), self.nz - 1.001)
+        i, j = int(fx), int(fz)
+        u, v = fx - i, fz - j
+        h00, h10, h01, h11 = self.h[j, i], self.h[j, i + 1], self.h[j + 1, i], self.h[j + 1, i + 1]
+        # Two triangles per cell, split along (0,0)-(1,1), as downtown.rs builds them.
+        if u >= v:
+            return float(h00 + u * (h10 - h00) + v * (h11 - h10))
+        return float(h00 + v * (h01 - h00) + u * (h11 - h01))
+
+
+def cut_aerial(t):
+    """The aerial photo cut into TILE-metre ground tiles (256 px each); returns their (ix, iz)."""
+    jpg = f"data/aerial/{REGION}.jpg"
+    if not os.path.exists(jpg):
+        print("aerial: none downloaded")
+        return [], None
+    from PIL import Image, ImageEnhance
+    img = Image.open(jpg).convert("RGB")
+    # A touch more contrast and colour: lit again by the game's sun, the photo looks flat.
+    img = ImageEnhance.Color(ImageEnhance.Contrast(img).enhance(1.15)).enhance(1.12)
+    s, w, n, e = json.load(open(f"data/aerial/{REGION}.json"))["bbox"]
+    W, H = img.size
+    os.makedirs(AERIAL_OUT, exist_ok=True)
+    for f in os.listdir(AERIAL_OUT):
+        os.remove(os.path.join(AERIAL_OUT, f))
+    tiles = []
+    span_x = (t.nx - 1) * CELL
+    span_z = (t.nz - 1) * CELL
+    for iz in range(int(math.ceil(span_z / TILE))):
+        for ix in range(int(math.ceil(span_x / TILE))):
+            tx0, tz0 = t.gx0 + ix * TILE, t.gz0 + iz * TILE
+            lon0, lon1 = LON0 + tx0 / M_LON, LON0 + (tx0 + TILE) / M_LON
+            lat0, lat1 = LAT0 - tz0 / M_LAT, LAT0 - (tz0 + TILE) / M_LAT  # north edge, south edge
+            box_px = ((lon0 - w) / (e - w) * W, (n - lat0) / (n - s) * H, (lon1 - w) / (e - w) * W, (n - lat1) / (n - s) * H)
+            tile = img.transform((256, 256), Image.EXTENT, box_px, Image.BILINEAR)
+            tile.save(f"{AERIAL_OUT}/{ix}_{iz}.jpg", quality=82)
+            tiles.append((ix, iz))
+    print(f"aerial: {len(tiles)} tiles of {TILE:.0f} m")
+    px = img.load()
+
+    def colour_at(x, z):
+        """The photo's colour at (x, z), or None off the photo."""
+        lon, lat = LON0 + x / M_LON, LAT0 - z / M_LAT
+        u, v = int((lon - w) / (e - w) * W), int((n - lat) / (n - s) * H)
+        if 0 <= u < W and 0 <= v < H:
+            return px[u, v]
+        return None
+
+    return tiles, colour_at
+
+
+def roof_colour(poly, colour_at):
+    """A building's roof colour from the aerial photo: the median of points inside it."""
+    if colour_at is None:
+        return (0, 0, 0)
+    inner = poly.buffer(-1.0)
+    if inner.is_empty:
+        inner = poly
+    minx, miny, maxx, maxy = inner.bounds
+    pts = [inner.representative_point()]
+    k = 5
+    for a in range(k):
+        for b in range(k):
+            pt = Point(minx + (maxx - minx) * (a + 0.5) / k, miny + (maxy - miny) * (b + 0.5) / k)
+            if inner.contains(pt):
+                pts.append(pt)
+    got = [c for c in (colour_at(p.x, p.y) for p in pts) if c is not None]
+    if not got:
+        return (0, 0, 0)
+    med = [sorted(c[i] for c in got)[len(got) // 2] for i in range(3)]
+    return tuple(max(1, v) for v in med)
+
+
 def main():
     src = json.load(open(SRC))
     x0, z0, x1, z1 = unproj_bbox(src["bbox"])
     area_box = box(x0, z0, x1, z1)
+    terrain = Terrain(x0, z0, x1, z1)
+    ground = terrain.ground
 
     # ---- buildings, with 3D parts standing in for the outlines they fill
     parts, outlines = [], []
@@ -268,11 +403,18 @@ def main():
     for t, p in kept + parts:
         if t.get("building") in ("construction", "roof") or t.get("building:part") == "roof":
             continue
-        base, top, guessed = height_of(t, p)
+        base_rel, h, guessed = height_of(t, p)
         name = t.get("name", "")
-        look = LOOK_LANDMARK if name in LANDMARKS else (LOOK_GLASS if top > 60 else LOOK_WALL)
+        look = LOOK_LANDMARK if name in LANDMARKS else (LOOK_GLASS if h > 60 else LOOK_WALL)
         for q in simplify(p):
-            blds.append({"poly": q, "base": base, "top": top, "look": look, "name": name, "guessed": guessed})
+            # On the terrain: the walls reach down to the lowest ground under the footprint
+            # (so nothing floats on a slope), the roof is the height above its middle.
+            c = q.representative_point()
+            g = ground(c.x, c.y)
+            grounded = base_rel == 0.0
+            gmin = min(ground(x, z) for x, z in list(q.exterior.coords)[::max(1, len(q.exterior.coords) // 12)])
+            base = gmin - 0.6 if grounded else g + base_rel
+            blds.append({"poly": q, "base": base, "top": g + h, "h": h, "grounded": grounded, "look": look, "name": name, "guessed": guessed})
     print(f"buildings: {len(blds)} prisms ({sum(b['guessed'] for b in blds)} with guessed heights)")
 
     # ---- flat shapes: streets, water, parks
@@ -324,7 +466,9 @@ def main():
     green_area = unary_union(green).intersection(area_box).difference(water_area) if green else Polygon()
     road_area = road_area.difference(water_area)
     flats = []
-    for kind, shape in [(FLAT_WATER, water_area), (FLAT_GREEN, green_area), (FLAT_ROAD, road_area)]:
+    # With terrain the aerial photo shows the streets, water and parks (flat shapes would float
+    # or sink on the slopes).
+    for kind, shape in ([] if terrain.real else [(FLAT_WATER, water_area), (FLAT_GREEN, green_area), (FLAT_ROAD, road_area)]):
         for p in explode(make_valid(shape.simplify(0.4))):
             if p.area > 4:
                 flats.append((kind, p))
@@ -348,7 +492,7 @@ def main():
         from shapely.ops import substring
         full = LineString([(a[0], a[2]), (b[0], b[2])])
         L = full.length
-        line = substring(full, 3.0, L - 5.0)
+        line = substring(full, 3.0, L)
         if line.is_empty or line.length < 1.0:
             return False
         # Her body is half a metre wide, and swings: keep 1.5 m clear either side.
@@ -374,7 +518,7 @@ def main():
     starts = defaultdict(int)
     ends = defaultdict(int)
     # Candidate roofs: flat-topped places you can stand, 8 to 70 m up.
-    cand = [i for i, b in enumerate(blds) if 8.0 <= b["top"] <= 70.0 and b["base"] == 0.0 and b["poly"].area > 80]
+    cand = [i for i, b in enumerate(blds) if 8.0 <= b["h"] <= 70.0 and b["grounded"] and b["poly"].area > 80]
     for i in cand:
         a = blds[i]
         near = tree.query(a["poly"].buffer(45.0))
@@ -448,7 +592,7 @@ def main():
 
     def standable(i):
         b = blds[i]
-        return b["base"] == 0.0 and b["poly"].area >= 25.0
+        return b["grounded"] and b["poly"].area >= 25.0
 
     def edges(i):
         b = blds[i]
@@ -477,7 +621,7 @@ def main():
         """Reached without a ladder: a low roof off the street, or from a reached neighbour by a
         short climb, a jump across or a safe drop."""
         b = blds[i]
-        if b["top"] <= CLIMB_FREE:
+        if b["h"] <= CLIMB_FREE:
             return True
         for j in neighbours[i]:
             if j in reached and -CLIMB_FREE <= blds[j]["top"] - b["top"] <= DROP_SAFE:
@@ -498,13 +642,20 @@ def main():
             if f1 != f2:
                 continue
             if f1 is None:
-                base_h = 0.0
+                base_h = ground(mx + nx * 1.2, mz + nz * 1.2)
             elif f1 in reached:
                 base_h = blds[f1]["top"]
             else:
                 continue
             climb = b["top"] - base_h
             if not (CLIMB_FREE < climb <= max_climb):
+                continue
+            # The way in clear: a strip a metre wide from the wall out past where you'd start,
+            # with nothing in it taller than what you stand on (a corner of this building, a
+            # taller part beside the ladder).
+            tx, tz = -nz, nx
+            strip = Polygon([(mx + nx * a + tx * w, mz + nz * a + tz * w) for a, w in ((0.15, -0.55), (3.2, -0.55), (3.2, 0.55), (0.15, 0.55))])
+            if any(blds[k]["top"] > base_h + 0.3 and blds[k]["poly"].intersects(strip) for k in tree.query(strip)):
                 continue
             score = climb - 0.2 * min(L, 10.0) + (0.0 if f1 is None else 1.0)
             if best is None or score < best[0]:
@@ -544,7 +695,7 @@ def main():
     # ---- spawn points: street level at landmarks, and a few roofs
     def spot(name, lat, lon, yaw_deg, on_roof=False):
         x, z = proj(lat, lon)
-        y = roof_at(x, z) if on_roof else 0.0
+        y = roof_at(x, z) if on_roof else None
         def clear(px, pz):
             area = Point(px, pz).buffer(1.6)
             return not any(blds[i]["poly"].intersects(area) for i in tree.query(area))
@@ -565,12 +716,12 @@ def main():
             def open_run(ang):
                 dx, dz = -math.sin(ang), -math.cos(ang)  # yaw 0 faces -z
                 for d in range(2, 160, 2):
-                    if roof_at(x + dx * d, z + dz * d) > 0.0:
+                    if owner_at(x + dx * d, z + dz * d) is not None:
                         return d
                 return 160
             want_yaw = math.radians(yaw_deg)
             best = max((k * math.pi / 8 for k in range(16)), key=lambda a: open_run(a) - 20 * abs(math.remainder(a - want_yaw, 2 * math.pi)))
-            return (name, (x, y, z), best)
+            return (name, (x, ground(x, z), z), best)
         return (name, (x, y, z), math.radians(yaw_deg))
 
     def roof_spot(name, building, yaw_deg):
@@ -593,19 +744,60 @@ def main():
         return None
 
     # Yaw: 0 faces north (-z); positive turns left (west).
-    spots = [
-        spot("Public Square", 41.49950, -81.69370, 0),
-        spot("West Side Market", 41.48455, -81.70300, -60),
-        roof_spot("Tower City roof", "Hotel Cleveland, Autograph Collection", 0) or spot("Tower City", 41.49800, -81.69420, 0),
-        spot("East 4th St", 41.49905, -81.68990, 0),
-        spot("Playhouse Square", 41.50130, -81.68090, 90),
-        spot("Progressive Field", 41.49580, -81.68620, 90),
-        spot("Warehouse District", 41.49960, -81.70000, 0),
-        spot("Rock Hall", 41.50760, -81.69530, 180),
-        spot("Flats East Bank", 41.49640, -81.70420, 0),
-        roof_spot("Key Tower roof", "Key Tower", 180) or roof_spot("200 Public Square roof", "200 Public Square", 0)
-        or spot("Key Tower", 41.50060, -81.69310, 180),
-    ]
+    def top_roof_spot(name, yaw_deg):
+        """The highest open roof in the region."""
+        for b in sorted((b for b in blds if b["grounded"] and b["poly"].area > 150), key=lambda b: -b["top"])[:30]:
+            r = roof_spot(name, b["name"], yaw_deg) if b["name"] else None
+            if r:
+                return r
+            p = b["poly"].buffer(-2.0)
+            if not p.is_empty:
+                c = p.representative_point()
+                if abs(roof_at(c.x, c.y) - b["top"]) < 0.3:
+                    return (name, (c.x, b["top"], c.y), math.radians(yaw_deg))
+        return None
+
+    # Yaw: 0 faces north (-z); positive turns left (west).
+    if REGION == "downtown":
+        spots = [
+            spot("Public Square", 41.49950, -81.69370, 0),
+            spot("West Side Market", 41.48455, -81.70300, -60),
+            roof_spot("Tower City roof", "Hotel Cleveland, Autograph Collection", 0) or spot("Tower City", 41.49800, -81.69420, 0),
+            spot("East 4th St", 41.49905, -81.68990, 0),
+            spot("Playhouse Square", 41.50130, -81.68090, 90),
+            spot("Progressive Field", 41.49580, -81.68620, 90),
+            spot("Warehouse District", 41.49960, -81.70000, 0),
+            spot("Rock Hall", 41.50760, -81.69530, 180),
+            spot("Flats East Bank", 41.49640, -81.70420, 0),
+            roof_spot("Key Tower roof", "Key Tower", 180) or roof_spot("200 Public Square roof", "200 Public Square", 0)
+            or spot("Key Tower", 41.50060, -81.69310, 180),
+        ]
+    elif REGION == "westside":
+        spots = [
+            spot("West Side Market", 41.48455, -81.70300, -60),
+            spot("Lincoln Park", 41.47950, -81.69050, 0),
+            spot("Professor Ave", 41.47720, -81.68760, 0),
+            spot("Hingetown", 41.49210, -81.70880, 0),
+            spot("Franklin Blvd", 41.48800, -81.72000, -90),
+            spot("Lorain Ave", 41.48280, -81.71500, -90),
+            spot("Duck Island", 41.48550, -81.69650, 0),
+            spot("Clark Ave", 41.46600, -81.70800, 0),
+            top_roof_spot("Highest roof", 0),
+        ]
+    elif REGION == "lakewood":
+        spots = [
+            spot("Detroit & Warren", 41.48280, -81.79960, 0),
+            spot("Lakewood Park", 41.49380, -81.79800, 0),
+            spot("Madison Ave", 41.47660, -81.78900, 90),
+            spot("Detroit & W 117th", 41.48370, -81.77060, 90),
+            spot("Belle Ave", 41.48230, -81.80830, -90),
+            spot("Clifton Blvd", 41.48950, -81.78400, 90),
+            top_roof_spot("Highest roof", 0),
+        ]
+    else:
+        lat, lon = CFG["origin"]
+        spots = [spot(CFG["name"], lat, lon, 0), top_roof_spot("Highest roof", 0)]
+    spots = [sp for sp in spots if sp]
     for n, p, _ in spots:
         print(f"  spot {n}: {p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}")
 
@@ -643,6 +835,9 @@ def main():
         return not any(q.intersects(poly) for q in placed[-400:] if q.distance(poly) < 0.8)
 
     def put(kind, cx, base, cz, hx, h, hz, yaw, rgb, solid=True, check=True, mark=True):
+        """A box; `base` None stands it on the ground (a little sunk, for slopes)."""
+        if base is None:
+            base = ground(cx, cz) - 0.08
         poly = box_poly(cx, cz, hx, hz, yaw)
         if check and not free(poly.buffer(0.5)):
             return False
@@ -660,7 +855,7 @@ def main():
     # Rooftops: AC units, vents, a hut over the stairs, water tanks on the older blocks.
     for i in want:
         b = blds[i]
-        if b["top"] < 5.0 or b["poly"].area < 90:
+        if b["h"] < 5.0 or b["poly"].area < 90:
             continue
         inner = b["poly"].buffer(-2.2)
         if inner.is_empty:
@@ -668,7 +863,7 @@ def main():
         yaw = main_yaw(b["poly"])
         minx, minz, maxx, maxz = inner.bounds
         n = int(min(9, max(1, b["poly"].area / 220)))
-        kinds = [P_HUT] + [P_AC] * 5 + [P_VENT] * 3 + [P_SKY] * 2 + ([P_TANK] * 2 if 10 < b["top"] < 45 else [])
+        kinds = [P_HUT] + [P_AC] * 5 + [P_VENT] * 3 + [P_SKY] * 2 + ([P_TANK] * 2 if 10 < b["h"] < 45 else [])
         tries = 0
         made = 0
         while made < n and tries < n * 8:
@@ -713,8 +908,8 @@ def main():
                 if owner_at(cx, cz) is not None or not road_area.contains(Point(cx, cz)):
                     continue
                 col = rng.choice(car_colours)
-                if put(P_CAR, cx, 0.0, cz, 2.2, 1.0, 0.9, yaw, col):
-                    put(P_CABIN, cx - ux * 0.2, 1.0, cz - uz * 0.2, 1.2, 0.5, 0.8, yaw, tuple(min(1.0, c * 0.85 + 0.05) for c in col), check=False, mark=False)
+                if put(P_CAR, cx, None, cz, 2.2, 1.0, 0.9, yaw, col):
+                    put(P_CABIN, cx - ux * 0.2, ground(cx, cz) + 0.92, cz - uz * 0.2, 1.2, 0.5, 0.8, yaw, tuple(min(1.0, c * 0.85 + 0.05) for c in col), check=False, mark=False)
             d += rng.uniform(6.5, 9.0)
 
     # Dumpsters against walls by the alleys and service roads: a step up toward the roofs.
@@ -737,7 +932,7 @@ def main():
                     cx, cz = mx + nx * 0.75, mz + nz * 0.75
                     if owner_at(cx, cz) is not None:
                         continue
-                    put(P_DUMP, cx, 0.0, cz, 0.95, 1.3, 0.6, math.atan2(-nz, nx) + math.pi / 2, (0.16, 0.36, 0.22))
+                    put(P_DUMP, cx, None, cz, 0.95, 1.3, 0.6, math.atan2(-nz, nx) + math.pi / 2, (0.16, 0.36, 0.22))
                     break
             d += 9.0
 
@@ -753,21 +948,21 @@ def main():
             yaw = rng.uniform(0, math.pi)
             if t.get("natural") in ("tree", "tree_row"):
                 hgt = rng.uniform(5.0, 8.5)
-                if put(P_TRUNK, x, 0.0, z, 0.16, hgt * 0.45, 0.16, yaw, (0.36, 0.26, 0.18)):
+                if put(P_TRUNK, x, None, z, 0.16, hgt * 0.45, 0.16, yaw, (0.36, 0.26, 0.18)):
                     r = rng.uniform(1.6, 2.4)
-                    props.append((P_CANOPY, (x, hgt * 0.38, z), (r, hgt * 0.62, r), yaw, (0.30 + rng.uniform(-0.04, 0.04), 0.52 + rng.uniform(-0.06, 0.06), 0.26), False))
+                    props.append((P_CANOPY, (x, ground(x, z) + hgt * 0.38, z), (r, hgt * 0.62, r), yaw, (0.30 + rng.uniform(-0.04, 0.04), 0.52 + rng.uniform(-0.06, 0.06), 0.26), False))
             elif t.get("highway") == "street_lamp":
-                if put(P_POLE, x, 0.0, z, 0.08, 6.0, 0.08, yaw, (0.20, 0.21, 0.23)):
-                    props.append((P_LAMP, (x, 5.75, z), (0.28, 0.25, 0.28), yaw, (1.0, 0.9, 0.7), False))
+                if put(P_POLE, x, None, z, 0.08, 6.0, 0.08, yaw, (0.20, 0.21, 0.23)):
+                    props.append((P_LAMP, (x, ground(x, z) + 5.75, z), (0.28, 0.25, 0.28), yaw, (1.0, 0.9, 0.7), False))
             elif t.get("amenity") == "bench":
-                put(P_BENCH, x, 0.0, z, 0.9, 0.48, 0.28, yaw, (0.42, 0.30, 0.20))
+                put(P_BENCH, x, None, z, 0.9, 0.48, 0.28, yaw, (0.42, 0.30, 0.20))
             elif t.get("highway") == "bus_stop":
-                if put(P_SHELTER, x, 0.0, z, 1.6, 2.5, 0.08, yaw, (0.55, 0.62, 0.68)):
-                    props.append((P_SHELTER, (x - math.sin(yaw) * 0.7, 2.5, z - math.cos(yaw) * 0.7), (1.7, 0.1, 0.8), yaw, (0.55, 0.62, 0.68), True))
+                if put(P_SHELTER, x, None, z, 1.6, 2.5, 0.08, yaw, (0.55, 0.62, 0.68)):
+                    props.append((P_SHELTER, (x - math.sin(yaw) * 0.7, ground(x, z) + 2.5, z - math.cos(yaw) * 0.7), (1.7, 0.1, 0.8), yaw, (0.55, 0.62, 0.68), True))
             elif t.get("emergency") == "fire_hydrant":
-                put(P_HYDRANT, x, 0.0, z, 0.15, 0.8, 0.15, 0.0, (0.86, 0.14, 0.08))
+                put(P_HYDRANT, x, None, z, 0.15, 0.8, 0.15, 0.0, (0.86, 0.14, 0.08))
             elif t.get("amenity") == "waste_basket":
-                put(P_BIN, x, 0.0, z, 0.25, 0.9, 0.25, yaw, (0.15, 0.18, 0.16))
+                put(P_BIN, x, None, z, 0.25, 0.9, 0.25, yaw, (0.15, 0.18, 0.16))
     # Street lamps along the main streets (OSM maps only a handful downtown), staggered sides.
     for el in src["streets"]:
         hw = el.get("tags", {}).get("highway", "")
@@ -787,10 +982,10 @@ def main():
             ux, uz = ux / n, uz / n
             off = w / 2 + 0.9
             cx, cz = a.x - uz * off * side, a.y + ux * off * side
-            if owner_at(cx, cz) is None and put(P_POLE, cx, 0.0, cz, 0.08, 6.5, 0.08, 0.0, (0.20, 0.21, 0.23)):
+            if owner_at(cx, cz) is None and put(P_POLE, cx, None, cz, 0.08, 6.5, 0.08, 0.0, (0.20, 0.21, 0.23)):
                 # The arm reaches back out over the road.
                 hx, hz = cx + uz * side * 1.0, cz - ux * side * 1.0
-                props.append((P_LAMP, (hx, 6.25, hz), (0.32, 0.22, 0.32), math.atan2(-uz, ux), (1.0, 0.9, 0.7), False))
+                props.append((P_LAMP, (hx, ground(cx, cz) + 6.25, hz), (0.32, 0.22, 0.32), math.atan2(-uz, ux), (1.0, 0.9, 0.7), False))
             d += 30.0
             side = -side
 
@@ -803,13 +998,21 @@ def main():
     def q(v):
         return max(-32767, min(32767, int(round(v * 10))))
 
-    out = bytearray(b"CLE3")
+    tiles, colour_at = cut_aerial(terrain)
+    out = bytearray(b"CLE5")
     out += struct.pack("<4f", x0, z0, x1, z1)
+    # The ground: grid origin, cell, size, lake level, heights; then the aerial tiles.
+    out += struct.pack("<3fII?f", terrain.gx0, terrain.gz0, CELL, terrain.nx, terrain.nz, terrain.real, terrain.lake)
+    out += terrain.h.astype("<f4").tobytes()
+    out += struct.pack("<fI", TILE, len(tiles))
+    for ix, iz in tiles:
+        out += struct.pack("<HH", ix, iz)
     out += struct.pack("<I", len(blds))
     for b in blds:
         rings, tris = tri_poly(b["poly"])
         name = b["name"].encode()[:255]
-        out += struct.pack("<BffB", b["look"], b["base"], b["top"], len(name)) + name
+        out += struct.pack("<BffB", b["look"] | (0 if b["grounded"] else 0x80), b["base"], b["top"], len(name)) + name
+        out += struct.pack("<3B", *roof_colour(b["poly"], colour_at))
         out += struct.pack("<H", len(rings))
         for r in rings:
             out += struct.pack("<H", len(r))

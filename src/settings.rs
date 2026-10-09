@@ -250,7 +250,7 @@ pub fn setup(mut commands: Commands) {
                         b.spawn((Text::new("PLAY"), font(22.0), white.clone()));
                     });
                 panel.spawn((
-                    Text::new("Up/Down pick  -  Left/Right change  -  Enter play  -  Esc opens this again  -  M next map (Downtown is the real city)"),
+                    Text::new("Up/Down pick  -  Left/Right change  -  Enter play  -  Esc opens this again  -  M next map (Downtown, Ohio City & Tremont and Lakewood are the real city)"),
                     font(14.0),
                     dim.clone(),
                     Node { margin: UiRect::top(px(10.0)), ..default() },

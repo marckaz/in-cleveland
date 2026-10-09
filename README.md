@@ -6,9 +6,16 @@ A Mirror's Edge-style rooftop run across Cleveland, Ohio: from the West Side Mar
 
 It's a fork of [faith-runner](https://github.com/tnrjns/faith-runner) by tnrjns, which did all the work on the movement: Mirror's Edge-style first-person movement in Rust, with a Bevy greybox course to test it in. The movement lives in its own crate, `crates/faith_move`, which only depends on `glam`. It knows nothing about Bevy, so the same controller can later be dropped into IW4L or anything else that can hand it collision boxes.
 
+## What's new in V2.1
+
+- **Three real neighbourhoods**: Downtown, **Ohio City & Tremont** (the West Side Market, Lorain, Professor Ave, Lincoln Park, Hingetown) and **Lakewood** (Detroit Ave, Madison, Clifton, the bluffs at Lakewood Park), each at true scale from OpenStreetMap with ziplines, a ladder onto every roof, and cars, trees and rooftop units. See [The city maps](#the-city-maps-real-cleveland).
+- **Real ground**: the land rises and falls as it really does, from USGS elevation data. The Flats sit 25 m below Public Square, Tremont looks down on the valley, Lakewood Park ends at a bluff over the lake. The ground is solid however you land on it.
+- **Debug camera**: F3 to fly anywhere, T to put Faith down under the camera. See [Controls](#controls).
+- **Satellite view**: USGS aerial photos laid on the ground, so the streets, parking lots, rail yards and the river look like the real thing from the roofs, and every roof takes its colour from the photo.
+
 ## What's new in V2
 
-- **Downtown**: real downtown Cleveland at true scale, from OpenStreetMap. 2,908 buildings at their real footprints and heights, streets, the Cuyahoga, Lake Erie and the parks, with 70 rooftop ziplines and 518 street ladders, all checked by tests. See [Downtown](#downtown-real-cleveland-from-openstreetmap).
+- **Downtown**: real downtown Cleveland at true scale, from OpenStreetMap. 2,908 buildings at their real footprints and heights, streets, the Cuyahoga, Lake Erie and the parks, with 70 rooftop ziplines and 518 street ladders, all checked by tests. See [The city maps](#the-city-maps-real-cleveland).
 - **A new body**: an original first-person runner built in code, no Mirror's Edge assets, so it works in the browser too. Shoulders, IK elbows, gloved hands with jointed fingers that grip or open per move, a red wrap on each forearm, and legs and a torso you see when you look down.
 - **Playable in the browser** at https://marckaz.github.io/in-cleveland/, rebuilt on every push.
 
@@ -24,6 +31,7 @@ cargo install wasm-bindgen-cli --version 0.2.129
 cargo build --profile web --target wasm32-unknown-unknown
 wasm-bindgen --target web --no-typescript --out-dir dist --out-name in_cleveland target/wasm32-unknown-unknown/web/in-cleveland.wasm
 cp web/index.html dist/
+cp -r assets dist/
 ```
 
 Then serve `dist/` with any static file server (for example `python -m http.server -d dist`).
@@ -57,6 +65,9 @@ It opens on a **settings menu**: master volume, music, effects, mouse sensitivit
 | Settings menu (pauses) | Esc | |
 | Toggle help | F1 | |
 | Mirror's Edge body ↔ procedural arms | F2 | |
+| Debug camera: fly free (Faith waits where she was) | F3 or ` (again to go back) | |
+
+**Debug camera.** WASD flies where you look, Space or E goes up, Ctrl or Q goes down, Shift flies five times faster, and the mouse wheel sets the speed (1 to 2,000 m/s). 1–0 jump to the map's landmarks. **T** puts Faith down on whatever is under the camera and goes back to playing. The fog moves four times further out while flying, so you can see a whole city map from the air. The HUD shows the camera's position, heading and the ground height below it. For screenshots, `FAITH_CAPTURE=shots FAITH_CAPTURE_FLY="x,y,z,yaw,pitch;..."` (degrees; yaw 0 looks north, left is positive) shoots a still from each position.
 
 ## The moves
 
@@ -200,7 +211,7 @@ All of it lives in `crates/faith_move/src/camera.rs` (`CameraFx`) with its numbe
 
 ## The maps
 
-The game starts on **Cleveland**. **M** switches map (Rooftops → Moves → Springboard → Cleveland → Downtown → Training). Each has a time trial: the clock starts when you leave the start area and stops at the orange marker.
+The game starts on **Cleveland**. **M** switches map (Rooftops → Moves → Springboard → Cleveland → Downtown → Ohio City & Tremont → Lakewood → Training). Each has a time trial: the clock starts when you leave the start area and stops at the orange marker.
 
 ### Cleveland (default)
 
@@ -222,27 +233,35 @@ You run east. North is on your left, so Lake Erie, the stadium and the Rock Hall
 
 Every section, the girder and crate alternatives, missing the zipline and the shut door are checked by scripted input in `crates/faith_move/src/cleveland_tests.rs`, along with one test that runs the whole map start to finish in one go (a scripted player does it in about 66 s). `FAITH_MAP=3` (or `FAITH_MAP=cleveland`) starts on it.
 
-### Downtown (real Cleveland, from OpenStreetMap)
+### The city maps (real Cleveland)
 
-Downtown Cleveland at true scale, about 3 km across, from the West Side Market to Playhouse Square and the lakefront (`crates/faith_move/src/downtown.rs`). Every building stands on its real footprint at its real height, from [OpenStreetMap](https://www.openstreetmap.org/copyright): OSM's `height` where it has one, otherwise `building:levels` x 3.5 m, otherwise a guess from the kind of building. Key Tower is 289 m, Terminal Tower 52 storeys. Streets, the Cuyahoga, Lake Erie and the parks are painted on the ground. The ground is flat: the river valley and the bluffs aren't modelled.
+Three neighbourhoods at true scale, built by the same code (`crates/faith_move/src/downtown.rs`) from different data:
+
+- **Downtown**, about 3 km across: Public Square, Terminal Tower, Key Tower (289 m), East 4th, Playhouse Square, the Warehouse District, the Flats and the lakefront. `?map=downtown` on the web page, `FAITH_MAP=downtown` on a computer.
+- **Ohio City & Tremont**, about 4.5 km by 4 km: the West Side Market, Lorain Ave, Hingetown, Franklin Blvd, Duck Island, Professor Ave, Lincoln Park and Clark Ave, with the valley between them. `?map=westside`.
+- **Lakewood**, about 4.5 km by 2.5 km: Detroit Ave from W 117th west, Madison, Clifton Blvd, Belle Ave and Lakewood Park on the bluffs. `?map=lakewood`.
+
+Every building stands on its real footprint at its real height, from [OpenStreetMap](https://www.openstreetmap.org/copyright): OSM's `height` where it has one, otherwise `building:levels` x 3.5 m, otherwise a guess from the kind of building (most of the West Side and Lakewood are houses, two and a half storeys).
+
+**The ground** is real: heights from the USGS 3D Elevation Program (via the AWS Terrain Tiles), on a 16 m grid. Buildings stand on it, the lake and river sit at Lake Erie's level (174 m), and you collide with it as a heightfield, so you can't sink through it on a slope. **Aerial photos** from the USGS National Map (public domain, about 2 m per pixel) are laid over it in 512 m tiles (`assets/aerial/<region>/`), loaded as you play.
 
 Real streets are far too wide to jump, so there's a parkour layer on top, placed by the bake script:
 
-- **Ziplines** (red masts) from a roof down to a lower roof across the street, wherever the drop is gentle enough to ride, there's a run-up behind the mast and room to land.
-- **Ladders** onto every roof: from the street, or up from the next roof along, chained until all 2,849 roofs you can stand on connect (all but six slivers of skyscraper crowns). The skyscrapers get long service ladders.
-- **Things in the streets and on the roofs**: about 5,500 rooftop AC units, vents, water tanks and stair huts; 5,200 parked cars; dumpsters by the alleys; and the trees, benches, bus shelters, hydrants and bins OpenStreetMap maps, plus street lamps along the main streets. All solid: vault the cars, climb the huts.
+- **Ziplines** (red masts) from a roof down to a lower roof across the street, wherever the drop is gentle enough to ride, there's a run-up behind the mast, room to land, and nothing in the way of your body on the ride.
+- **Ladders** onto every roof: from the street, or up from the next roof along, chained until the roofs you can stand on connect (Downtown: all but eight slivers of skyscraper crowns; Ohio City & Tremont and Lakewood: every one). The skyscrapers get long service ladders. Each ladder has a clear metre-wide way in.
+- **Things in the streets and on the roofs**: rooftop AC units, vents, water tanks and stair huts; parked cars; dumpsters by the alleys; and the trees, benches, bus shelters, hydrants and bins OpenStreetMap maps, plus street lamps along the main streets. All solid: vault the cars, climb the huts.
 
-It's a free run: no course and no finish. **1–0** jump between landmarks (Public Square, the West Side Market, the Tower City roof, East 4th, Playhouse Square, Progressive Field, the Warehouse District, the Rock Hall, the Flats East Bank, and the roof of 200 Public Square, 191 m up). Walking up to one makes it your respawn point. A fall of 10 m or more is fatal, as everywhere.
+It's a free run: no course and no finish. **1–0** jump between landmarks (on Downtown: Public Square, the West Side Market, the Tower City roof, East 4th, Playhouse Square, Progressive Field, the Warehouse District, the Rock Hall, the Flats East Bank, and the roof of 200 Public Square, 191 m up). Walking up to one makes it your respawn point. A fall of 10 m or more is fatal, as everywhere.
 
 How it's made:
 
-1. `tools/osm/fetch.py` downloads the area from the Overpass API into `data/osm/cleveland.json`. The **Fetch OpenStreetMap** workflow runs it on GitHub and commits the result.
-2. `tools/osm/bake.py` (needs `pip install mapbox-earcut shapely numpy`) turns that into `crates/faith_move/data/downtown.bin`: buildings as triangulated prisms (3D `building:part`s stand in for the outlines they fill), the ground shapes, and the ziplines, ladders and spawn points.
+1. `tools/osm/regions.json` lists the regions (bounding box and origin). `tools/osm/fetch.py <region>` downloads each from the Overpass API into `data/osm/<region>.json`; `tools/geo/fetch_geo.py <region>` downloads its elevation (`data/terrain/`) and aerial photo (`data/aerial/`). The **Fetch map data** workflow runs both on GitHub and commits the result.
+2. `tools/osm/bake.py <region>` (needs `pip install mapbox-earcut shapely numpy pillow`) turns that into `crates/faith_move/data/<region>.bin`: the ground grid, buildings as triangulated prisms standing on it (3D `building:part`s stand in for the outlines they fill), the ziplines, ladders, objects and spawn points; and cuts the photo into `assets/aerial/<region>/`.
 3. The game reads the file at startup, and collides with the buildings as triangles (`MeshWorld`), so walls at any angle take wallruns, climbs and ledge grabs.
 
-`crates/faith_move/src/downtown_tests.rs` checks that every spawn point holds you, every ladder gets you onto its roof, and every zipline carries you across and sets you down on the far roof.
+`crates/faith_move/src/downtown_tests.rs` checks, on each region, that every spawn point holds you, the ground is where the elevation data says and you stay on it running up and down slopes, the ladders get you onto their roofs, every zipline carries you across and sets you down on the far roof, cars are solid, and a fall off a tall roof kills.
 
-Map data © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright).
+Map data © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright). Elevation: USGS 3DEP and the other sources of the [AWS Terrain Tiles](https://github.com/tilezen/joerd/blob/master/docs/attribution.md). Aerial photos: USGS The National Map (public domain).
 
 ### Rooftops
 
@@ -353,7 +372,7 @@ crates/faith_move/src/
   greybox.rs       the Training course, as data (and the Level type)
   cleveland.rs     the Cleveland map (and its skyline)
   cleveland_tests.rs every Cleveland section, and the whole run, beaten by scripted input
-  downtown.rs      the Downtown map: real Cleveland from OpenStreetMap (data/downtown.bin)
+  downtown.rs      the city maps: Downtown, Ohio City & Tremont, Lakewood (data/<region>.bin)
   downtown_tests.rs its spawn points, ladders and ziplines, checked by scripted input
   rooftops.rs      the Rooftops map
   rooftops_tests.rs every Rooftops route, beaten by scripted input
@@ -370,7 +389,9 @@ src/viewmodel.rs   procedural first-person arms (fallback)
 src/me_viewmodel.rs loads Faith's body from your install, skins and draws it where faith_anim places it
 src/audio.rs       Mirror's Edge sounds: animation cues, surfaces, landings, breathing, wind, music
 src/settings.rs    the launch/Esc settings menu (volumes, sensitivity, FOV)
-tools/osm/         fetch.py downloads downtown Cleveland from OpenStreetMap; bake.py builds the Downtown map
+tools/osm/         fetch.py downloads a region from OpenStreetMap; bake.py builds its map; regions.json lists them
+tools/geo/         fetch_geo.py downloads a region's elevation and aerial photo
+assets/aerial/     the aerial photo tiles the city maps draw on the ground
 crates/me_assets/  UE3 readers: packages, skeletal meshes, animations, morphs, textures, sounds
 crates/faith_anim/ Mirror's Edge's animation driver, body and camera placement (Rig), and which sounds play when
 tools/me-extract/  scripts that read movement values out of Mirror's Edge's TdGame.u, and decompile its move code
@@ -378,4 +399,4 @@ tools/me-extract/  scripts that read movement values out of Mirror's Edge's TdGa
 
 ## Screenshot mode
 
-`FAITH_CAPTURE=shots cargo run --release` (PowerShell: `$env:FAITH_CAPTURE="shots"; cargo run --release`) plays a scripted sprint, vault, slide, dodge, wallrun, wallclimb and ledge hang, saves a PNG mid-move for each into `shots/`, and quits. `FAITH_CAPTURE_FROM=5` starts from a later move. Add `FAITH_CAPTURE_TOUR=1` to photograph each Rooftops checkpoint instead, or `FAITH_CAPTURE_MOVES=1` to shoot the springboard, balance beam, swing, zipline and a kick on the Moves map. `FAITH_CAPTURE_SLIDE=1` slides down a Springboard-map lane and shoots what each key does mid-slide (look left/right, Q, F, A, S, jump, let go of crouch, look down); `FAITH_CAPTURE_DELAY=<frames>` sets how long after the key. `FAITH_CAPTURE_LOOK=1` shoots looking down in steps, standing and running. `FAITH_MAP=0` starts the game on Rooftops, `FAITH_MAP=1` on the Moves map, `FAITH_MAP=2` on Springboard, `FAITH_MAP=3` on Cleveland (the default), `FAITH_MAP=4` on Downtown (a map's name works too). With `FAITH_CAPTURE_TOUR=1`, `FAITH_MAP=3` photographs the Cleveland checkpoints. `FAITH_CAPTURE_YAW=<degrees>` (right is positive) and `FAITH_CAPTURE_PITCH=<degrees>` (up) turn the tour's camera to shoot the scenery beside the route. Handy for checking the level renders after changes.
+`FAITH_CAPTURE=shots cargo run --release` (PowerShell: `$env:FAITH_CAPTURE="shots"; cargo run --release`) plays a scripted sprint, vault, slide, dodge, wallrun, wallclimb and ledge hang, saves a PNG mid-move for each into `shots/`, and quits. `FAITH_CAPTURE_FROM=5` starts from a later move. Add `FAITH_CAPTURE_TOUR=1` to photograph each Rooftops checkpoint instead, or `FAITH_CAPTURE_MOVES=1` to shoot the springboard, balance beam, swing, zipline and a kick on the Moves map. `FAITH_CAPTURE_SLIDE=1` slides down a Springboard-map lane and shoots what each key does mid-slide (look left/right, Q, F, A, S, jump, let go of crouch, look down); `FAITH_CAPTURE_DELAY=<frames>` sets how long after the key. `FAITH_CAPTURE_LOOK=1` shoots looking down in steps, standing and running. `FAITH_MAP=0` starts the game on Rooftops, `FAITH_MAP=1` on the Moves map, `FAITH_MAP=2` on Springboard, `FAITH_MAP=3` on Cleveland (the default), `FAITH_MAP=4` on Downtown, `FAITH_MAP=5` on Ohio City & Tremont, `FAITH_MAP=6` on Lakewood (a map's key or name works too: `downtown`, `westside`, `lakewood`). With `FAITH_CAPTURE_TOUR=1`, `FAITH_MAP=3` photographs the Cleveland checkpoints. `FAITH_CAPTURE_YAW=<degrees>` (right is positive) and `FAITH_CAPTURE_PITCH=<degrees>` (up) turn the tour's camera to shoot the scenery beside the route. Handy for checking the level renders after changes.

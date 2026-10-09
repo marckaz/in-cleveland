@@ -41,7 +41,7 @@ jobs:
             && sudo cp binaryen-version_123/bin/wasm-opt /usr/local/bin/ && wasm-opt --version) || echo "no wasm-opt"
 
       - name: Movement tests
-        run: cargo test -p faith_move
+        run: cargo test --release -p faith_move
 
       - name: Build for the browser
         run: cargo build --profile web --target wasm32-unknown-unknown
@@ -55,6 +55,8 @@ jobs:
             && mv dist/opt.wasm dist/in_cleveland_bg.wasm \
             || echo "wasm-opt failed; shipping the unoptimised build"
           sed "s/__BUILD__/${GITHUB_SHA::7}/g" web/index.html > dist/index.html
+          # Aerial photos for the city maps, loaded by the game as it needs them.
+          cp -r assets dist/
           touch dist/.nojekyll
           ls -la dist
 

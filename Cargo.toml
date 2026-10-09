@@ -3,14 +3,14 @@ members = [".", "crates/*"]
 
 [package]
 name = "in-cleveland"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 
 [dependencies]
 faith_move = { path = "crates/faith_move" }
 me_assets = { path = "crates/me_assets" }
 faith_anim = { path = "crates/faith_anim" }
-bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "audio", "wav"] }
+bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "audio", "wav", "jpeg"] }
 
 # The browser build (GitHub Pages): WebGL2, the browser's random numbers, and the page's
 # pointer lock and local storage.

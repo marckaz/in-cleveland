@@ -19,7 +19,7 @@ use std::f32::consts::FRAC_PI_2;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
@@ -111,13 +111,54 @@ struct Game {
     look: faith_move::LookLimiter,
     /// Mirror's Edge's Reaction Time (Left Alt, left stick click): slows the app's clock.
     reaction: faith_move::reaction::ReactionTime,
+    /// The debug camera (F3 or `), flying free of the runner, who waits where she was.
+    fly: Option<Fly>,
+}
+
+/// The debug camera: where it is, which way it looks, how fast it flies.
+#[derive(Clone, Copy, Debug)]
+struct Fly {
+    eye: Vec3,
+    /// Radians; 0 looks north (-Z), turning left is positive (as the runner's).
+    yaw: f32,
+    pitch: f32,
+    /// Metres per second (Shift: five times that).
+    speed: f32,
+}
+
+impl Fly {
+    fn rotation(&self) -> Quat {
+        Quat::from_euler(EulerRot::YXZ, self.yaw, self.pitch, 0.0)
+    }
 }
 
 /// The maps, in the order M cycles through them.
 // Training stays last: the screenshot capture scripts its moves on it.
-const LEVELS: [fn() -> Level; 6] = [rooftops::rooftops, moves::moves, springboard::springboard, cleveland::cleveland, downtown::downtown, greybox::greybox];
+const LEVELS: [fn() -> Level; 8] = [
+    rooftops::rooftops,
+    moves::moves,
+    springboard::springboard,
+    cleveland::cleveland,
+    downtown::downtown,
+    downtown::westside,
+    downtown::lakewood,
+    greybox::greybox,
+];
 /// The maps' names, in the order of [`LEVELS`] (for picking one by name without building them all).
-const LEVEL_NAMES: [&str; 6] = ["Rooftops", "Moves", "Springboard", "Cleveland", "Downtown", "Training"];
+const LEVEL_NAMES: [&str; 8] = ["Rooftops", "Moves", "Springboard", "Cleveland", "Downtown", "Ohio City & Tremont", "Lakewood", "Training"];
+/// Short names for `?map=` / FAITH_MAP, in the order of [`LEVELS`].
+const LEVEL_KEYS: [&str; 8] = ["rooftops", "moves", "springboard", "cleveland", "downtown", "westside", "lakewood", "training"];
+
+/// The map named `v`: a key (`westside`), a name (`Lakewood`) or a few aliases.
+fn level_by_name(v: &str) -> Option<usize> {
+    let v = v.trim().to_ascii_lowercase().replace("%20", " ").replace('+', " ");
+    let v = match v.as_str() {
+        "tremont" | "ohiocity" | "ohio city" | "ohio-city" | "west side" => "westside",
+        "course" => "cleveland",
+        other => other,
+    };
+    LEVEL_KEYS.iter().position(|k| *k == v).or_else(|| LEVEL_NAMES.iter().position(|n| n.eq_ignore_ascii_case(v)))
+}
 
 /// A map asked for by name or number: `FAITH_MAP` on a computer, `?map=` on the web page.
 fn requested_map() -> Option<String> {
@@ -235,8 +276,69 @@ fn look_material(mats: &LevelMats, look: Look) -> Handle<StandardMaterial> {
     }
 }
 
-fn spawn_level(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &LevelMats, level: &Level) {
-    for m in &level.meshes {
+/// A real map's ground, one mesh per aerial photo tile, with the photo on it; and the water.
+fn spawn_ground(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, assets: &AssetServer, mats: &LevelMats, g: &greybox::Ground) {
+    let per = (g.tile / g.cell).round().max(1.0) as usize;
+    let tiles_x = (g.nx - 1).div_ceil(per);
+    let tiles_z = (g.nz - 1).div_ceil(per);
+    let photo: std::collections::HashMap<(u32, u32), &str> = g.tiles.iter().map(|(ix, iz, p)| ((*ix, *iz), p.as_str())).collect();
+    let plain = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.58, 0.52), perceptual_roughness: 1.0, ..default() });
+    for tz in 0..tiles_z {
+        for tx in 0..tiles_x {
+            let (i0, j0) = (tx * per, tz * per);
+            let (i1, j1) = ((i0 + per).min(g.nx - 1), (j0 + per).min(g.nz - 1));
+            let (ox, oz) = (g.x0 + i0 as f32 * g.cell, g.z0 + j0 as f32 * g.cell);
+            let (mut pos, mut nrm, mut uv) = (vec![], vec![], vec![]);
+            for j in j0..j1 {
+                for i in i0..i1 {
+                    let (a, b, c, d) = (g.corner(i, j), g.corner(i + 1, j), g.corner(i + 1, j + 1), g.corner(i, j + 1));
+                    // Wound to face up (as seen from above, x east and z south: a, c, b).
+                    for t in [[a, c, b], [a, d, c]] {
+                        let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+                        for v in t {
+                            pos.push(v.to_array());
+                            nrm.push(n.to_array());
+                            uv.push([(v.x - ox) / g.tile, (v.z - oz) / g.tile]);
+                        }
+                    }
+                }
+            }
+            if pos.is_empty() {
+                continue;
+            }
+            let n = pos.len() as u32;
+            let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+                .with_inserted_indices(Indices::U32((0..n).collect()));
+            let material = match photo.get(&(tx as u32, tz as u32)) {
+                Some(path) => materials.add(StandardMaterial {
+                    // The photos already have the sun in them: darker, so they don't wash out.
+                    base_color: Color::srgb(0.66, 0.66, 0.66),
+                    base_color_texture: Some(assets.load(path.to_string())),
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.2,
+                    ..default()
+                }),
+                None => plain.clone(),
+            };
+            commands.spawn((LevelGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(material)));
+        }
+    }
+    if let Some(lake) = g.lake {
+        let (x0, z0) = (g.x0 - 400.0, g.z0 - 400.0);
+        let (x1, z1) = (g.x0 + (g.nx - 1) as f32 * g.cell + 400.0, g.z0 + (g.nz - 1) as f32 * g.cell + 400.0);
+        let water = Aabb::new(Vec3::new(x0, lake - 0.05, z0), Vec3::new(x1, lake, z1));
+        commands.spawn((LevelGeom, Mesh3d(meshes.add(box_mesh(&water))), MeshMaterial3d(mats.water.clone())));
+    }
+}
+
+fn spawn_level(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, assets: &AssetServer, mats: &LevelMats, level: &Level) {
+    if let Some(g) = &level.ground {
+        spawn_ground(commands, meshes, materials, assets, mats, g);
+    }
+    for m in level.meshes.iter().filter(|m| !m.hidden) {
         for mesh in tri_meshes(m) {
             commands.spawn((LevelGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(look_material(mats, m.look))));
         }
@@ -335,6 +437,7 @@ fn setup_world(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    assets: Res<AssetServer>,
 ) {
     // Screenshot capture scripts its moves on the training course.
     // Screenshot capture scripts its moves on the training course; the
@@ -343,11 +446,11 @@ fn setup_world(
         1
     } else if std::env::var_os("FAITH_CAPTURE_SLIDE").is_some() || std::env::var_os("FAITH_CAPTURE_LOOK").is_some() {
         2 // the Springboard range: long clear run-ups
-    } else if std::env::var_os("FAITH_CAPTURE").is_some() && std::env::var_os("FAITH_CAPTURE_TOUR").is_none() {
+    } else if std::env::var_os("FAITH_CAPTURE").is_some() && std::env::var_os("FAITH_CAPTURE_TOUR").is_none() && std::env::var_os("FAITH_CAPTURE_FLY").is_none() {
         LEVELS.len() - 1
     } else if let Some(i) = requested_map().and_then(|v| v.parse::<usize>().ok()) {
         i.min(LEVELS.len() - 1)
-    } else if let Some(i) = requested_map().and_then(|v| LEVEL_NAMES.iter().position(|n| n.eq_ignore_ascii_case(v.trim()))) {
+    } else if let Some(i) = requested_map().and_then(|v| level_by_name(&v)) {
         i
     } else if std::env::var_os("FAITH_CAPTURE").is_some() {
         0 // the tour photographs Rooftops unless FAITH_MAP says otherwise
@@ -409,7 +512,7 @@ fn setup_world(
     let stone = materials.add(mat(Color::srgb(0.90, 0.82, 0.70), LinearRgba::BLACK, 0.85));
     let paint = materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.7, ..default() });
     let mats = LevelMats { roof, wall, runner, prop, finish, skyline, water, green, lights, road, glass, stone, paint, metal };
-    spawn_level(&mut commands, &mut meshes, &mats, &level);
+    spawn_level(&mut commands, &mut meshes, &mut materials, &assets, &mats, &level);
     commands.insert_resource(mats);
 
     // Sun.
@@ -453,6 +556,7 @@ fn setup_world(
         shot: Shot::default(),
         look: Default::default(),
         reaction: Default::default(),
+        fly: None,
     });
 }
 
@@ -638,7 +742,7 @@ Shift / C crouch, slide, roll (tap before landing)
 A or D + Space dodge (look 90 right, dodge left = top speed)
 Q 180 turn (on a wall: climb, Q, Space to kick)  |  Left mouse (or F) attack, barge doors  |  G idle
 Balance beam: left/right against the lean  |  Swing: hold W, Space on the forward swing
-Left Alt Reaction Time  |  R respawn  |  1-9, 0 checkpoints  |  M next map  |  F1 help  |  F2 ME/procedural  |  Esc mouse
+Left Alt Reaction Time  |  R respawn  |  1-9, 0 checkpoints  |  M next map  |  F1 help  |  F2 ME/procedural  |  F3 debug camera  |  Esc mouse
 Pad: sticks  |  A/LB jump  |  B/LT crouch  |  Y turn  |  X kick  |  Select respawn";
 
 // ------------------------------------------------------------------ systems
@@ -727,6 +831,8 @@ fn switch_level(
     keys: Res<ButtonInput<KeyCode>>,
     mut game: ResMut<Game>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    assets: Res<AssetServer>,
     mats: Res<LevelMats>,
     geom: Query<Entity, With<LevelGeom>>,
     mut fog: Query<&mut DistanceFog, With<PlayerCamera>>,
@@ -745,7 +851,7 @@ fn switch_level(
     for mut f in &mut fog {
         *f = level_fog(&game.level);
     }
-    spawn_level(&mut commands, &mut meshes, &mats, &game.level);
+    spawn_level(&mut commands, &mut meshes, &mut materials, &assets, &mats, &game.level);
     game.checkpoint = 0;
     game.timer = None;
     game.last_time = None;
@@ -753,6 +859,7 @@ fn switch_level(
     game.ctrl.spawn = cp.spawn;
     game.ctrl.spawn_yaw = cp.yaw;
     game.ctrl.respawn();
+    game.fly = None;
     game.flash = Some((format!("MAP - {}", game.level.name), 0.0));
 }
 
@@ -768,6 +875,9 @@ fn play(
     settings: Res<settings::Settings>,
     menu: Res<settings::Menu>,
     mut virtual_time: ResMut<Time<Virtual>>,
+    scroll: Res<AccumulatedMouseScroll>,
+    mut fog: Query<&mut DistanceFog, With<PlayerCamera>>,
+    mut vm_cams: Query<&mut Camera, (With<viewmodel::ViewmodelCamera>, Without<PlayerCamera>)>,
 ) {
     let dt = time.delta_secs();
     let game = &mut *game;
@@ -823,6 +933,105 @@ fn play(
 
     if keys.just_pressed(KeyCode::F1) {
         game.show_help = !game.show_help;
+    }
+
+    // ---- the debug camera: F3 (or `) flies free; again comes back to the runner
+    if keys.just_pressed(KeyCode::F3) || keys.just_pressed(KeyCode::Backquote) {
+        let v = game.shot.view;
+        game.fly = match game.fly {
+            Some(_) => None,
+            None => Some(Fly { eye: v.eye, yaw: v.yaw, pitch: v.pitch, speed: 25.0 }),
+        };
+    }
+    let flying = game.fly.is_some();
+    for mut c in &mut vm_cams {
+        if c.is_active == flying {
+            c.is_active = !flying; // no arms floating in front of the debug camera
+        }
+    }
+    for mut f in &mut fog {
+        let mut want = level_fog(&game.level);
+        if flying {
+            // See the whole map from up high.
+            if let FogFalloff::Linear { start, end } = &mut want.falloff {
+                *start *= 4.0;
+                *end *= 4.0;
+            }
+        }
+        let end = |f: &FogFalloff| if let FogFalloff::Linear { end, .. } = f { *end } else { 0.0 };
+        if end(&f.falloff) != end(&want.falloff) {
+            *f = want;
+        }
+    }
+    if let Some(mut fly) = game.fly {
+        fly.yaw += input.look.x;
+        fly.pitch = (fly.pitch + input.look.y).clamp(-1.55, 1.55);
+        if scroll.delta.y != 0.0 {
+            fly.speed = (fly.speed * 1.25f32.powf(scroll.delta.y.signum())).clamp(1.0, 2000.0);
+        }
+        let rot = fly.rotation();
+        let mut dir = rot * Vec3::NEG_Z * mv.y + rot * Vec3::X * mv.x;
+        if keys.pressed(KeyCode::Space) || keys.pressed(KeyCode::KeyE) {
+            dir.y += 1.0;
+        }
+        if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::KeyQ) || keys.pressed(KeyCode::KeyC) {
+            dir.y -= 1.0;
+        }
+        let fast = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { 5.0 } else { 1.0 };
+        fly.eye += dir.clamp_length_max(1.0) * fly.speed * fast * time.delta_secs();
+        // 1-0: over to a landmark.
+        for (i, k) in [
+            KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5,
+            KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9, KeyCode::Digit0,
+        ]
+        .iter()
+        .enumerate()
+        {
+            if keys.just_pressed(*k) && i < game.level.checkpoints.len() {
+                let cp = &game.level.checkpoints[i];
+                fly.eye = cp.spawn + Vec3::Y * 1.6;
+                fly.yaw = cp.yaw;
+                fly.pitch = 0.0;
+            }
+        }
+        game.fly = Some(fly);
+        // T: put the runner down on whatever is under the camera, and play from there.
+        if keys.just_pressed(KeyCode::KeyT) {
+            use faith_move::world::World as _;
+            let half = Vec3::new(0.3, 0.05, 0.3);
+            let down = Vec3::new(0.0, -5000.0, 0.0);
+            let hit = match &game.mesh {
+                Some(mesh) => Layered { still: &game.world, moving: mesh }.sweep(half, fly.eye, down),
+                None => game.world.sweep(half, fly.eye, down),
+            };
+            if let Some(h) = hit {
+                let feet = fly.eye + down * h.t - Vec3::Y * half.y + Vec3::Y * 0.05;
+                game.ctrl.spawn = feet;
+                game.ctrl.spawn_yaw = fly.yaw;
+                game.ctrl.respawn();
+                let cp = &game.level.checkpoints[game.checkpoint];
+                game.ctrl.spawn = cp.spawn;
+                game.ctrl.spawn_yaw = cp.yaw;
+                game.fly = None;
+                game.flash = Some(("DROPPED HERE".to_string(), 0.0));
+            } else {
+                game.flash = Some(("NOTHING BELOW TO STAND ON".to_string(), 0.0));
+            }
+        }
+        if let Some(fly) = game.fly {
+            if let Ok((mut tf, mut proj)) = camera.single_mut() {
+                tf.translation = fly.eye;
+                tf.rotation = fly.rotation();
+                if let Projection::Perspective(p) = &mut *proj {
+                    p.fov = 70f32.to_radians();
+                    p.far = p.far.max(20000.0);
+                }
+            }
+            if let Some((_, t)) = &mut game.flash {
+                *t += dt;
+            }
+            return;
+        }
     }
 
     // ---- checkpoints / teleports
@@ -978,7 +1187,20 @@ fn update_hud(
 ) {
     let c = &game.ctrl;
     let speed = c.horizontal_speed();
-    if let Ok(mut t) = stats.single_mut() {
+    if let (Some(fly), Ok(mut t)) = (game.fly, stats.single_mut()) {
+        let ground = game.level.ground.as_ref().map(|g| format!("   ground {:.1} m", g.at(fly.eye.x, fly.eye.z))).unwrap_or_default();
+        t.0 = format!(
+            "DEBUG CAMERA  {:.0} m/s\nx {:.1}  y {:.1}  z {:.1}{}\nyaw {:.0}  pitch {:.0}\n{}\nWASD fly  Space/E up  Ctrl/Q down\nShift x5  wheel: speed  1-0 landmarks\nT drop the runner here  F3 back",
+            fly.speed,
+            fly.eye.x,
+            fly.eye.y,
+            fly.eye.z,
+            ground,
+            fly.yaw.to_degrees().rem_euclid(360.0),
+            fly.pitch.to_degrees(),
+            game.level.name,
+        );
+    } else if let Ok(mut t) = stats.single_mut() {
         let timer = match (game.timer, game.last_time) {
             (Some(t), _) => format!("Time {}", fmt_time(t)),
             (None, Some(l)) => format!("Last {}", fmt_time(l)),
@@ -1219,6 +1441,33 @@ mod capture {
         time: Res<Time>,
         mut exit: MessageWriter<AppExit>,
     ) {
+        if let Ok(spec) = std::env::var("FAITH_CAPTURE_FLY") {
+            // Stills from the debug camera: "x,y,z,yaw,pitch;..." (degrees; yaw 0 looks north,
+            // turning left is positive).
+            let shots: Vec<Vec<f32>> = spec.split(';').map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect()).filter(|v: &Vec<f32>| v.len() == 5).collect();
+            if cap.stage >= shots.len() {
+                println!("capture: done");
+                exit.write(AppExit::Success);
+                return;
+            }
+            cap.frame += 1;
+            if cap.frame == 1 {
+                let s = &shots[cap.stage];
+                game.fly = Some(Fly { eye: Vec3::new(s[0], s[1], s[2]), yaw: s[3].to_radians(), pitch: s[4].to_radians(), speed: 25.0 });
+                game.locked = true;
+                game.scripted = Some(MoveInput::default());
+            }
+            if cap.frame == 200 {
+                let path = format!("{}/fly_{:02}.png", cap.dir, cap.stage + 1);
+                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+                println!("capture: fly {}", cap.stage + 1);
+            }
+            if cap.frame > 220 {
+                cap.stage += 1;
+                cap.frame = 0;
+            }
+            return;
+        }
         if std::env::var_os("FAITH_CAPTURE_TOUR").is_some() {
             // One still per checkpoint of the current map.
             let n = game.level.checkpoints.len();

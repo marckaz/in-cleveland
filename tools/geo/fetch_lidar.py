@@ -151,7 +151,8 @@ def region(key, cfg):
         for arr, name in ((dtm, "dtm"), (top, "top")):
             a = read(f"{tmp}/{name}.tif")
             if a is not None:
-                arr[j:j + a.shape[0], i:i + a.shape[1]] = a[:h_, :w_]
+                a = a[:h_, :w_]
+                arr[j:j + a.shape[0], i:i + a.shape[1]] = a
         if (k + 1) % 4 == 0 or k + 1 == len(pieces):
             print(f"lidar {key}: {k + 1}/{len(pieces)} pieces", flush=True)
 

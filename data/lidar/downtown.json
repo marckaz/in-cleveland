@@ -1,0 +1,13 @@
+{
+ "bounds_3857": [
+  -9096140.0,
+  5083400.0,
+  -9091908.0,
+  5088308.0
+ ],
+ "res": 2.0,
+ "units": "uint16 decimetres above the ground; row 0 is the north edge",
+ "survey": "top",
+ "buildings_marked": false,
+ "source": "USGS 3D Elevation Program lidar (public domain), via the Entwine copies on AWS"
+}

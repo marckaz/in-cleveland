@@ -7,7 +7,7 @@
  ],
  "res": 2.0,
  "units": "uint16 decimetres above the ground; row 0 is the north edge",
- "survey": "top",
+ "survey": "OH_Statewide_Phase1_1_2019",
  "buildings_marked": false,
  "source": "USGS 3D Elevation Program lidar (public domain), via the Entwine copies on AWS"
 }

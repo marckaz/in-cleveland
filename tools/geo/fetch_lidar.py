@@ -114,9 +114,11 @@ def region(key, cfg):
     found = surveys(cfg["bbox"])
     if not found:
         raise SystemExit(f"::error::{key}: no lidar survey covers it")
-    cover, name, url = found[0]
-    note(f"lidar {key}: {name} covers {cover:.0%}")
-    cls = classes(url, bounds)
+    cover, survey, url = found[0]
+    note(f"lidar {key}: {survey} covers {cover:.0%}")
+    ept = json.loads(urllib.request.urlopen(url, timeout=120).read())
+    note(f"lidar {key}: survey srs {json.dumps(ept.get('srs'))[:200]}, bounds {ept.get('bounds')}")
+    cls = classes(url, bounds + "/EPSG:3857")
     buildings = 6 in cls
     note(f"lidar {key}: classes {sorted(cls)}; buildings {'marked' if buildings else 'not marked'}")
     # Read it a kilometre square at a time (the whole region at once runs out of memory).
@@ -134,7 +136,9 @@ def region(key, cfg):
         tmp = tempfile.mkdtemp()
         grid = {"resolution": RES, "bounds": pb, "data_type": "float32", "nodata": -9999, "gdaldriver": "GTiff"}
         stages = [
-            {"type": "readers.ept", "filename": url, "bounds": pb, "resolution": READ_RES, "threads": 8},
+            # Bounds given in web mercator whatever the survey is stored in; points reprojected to it.
+            {"type": "readers.ept", "filename": url, "bounds": pb + "/EPSG:3857", "resolution": READ_RES, "threads": 8},
+            {"type": "filters.reprojection", "out_srs": "EPSG:3857"},
             # Not noise (7: low, 18: high).
             {"type": "filters.range", "limits": "Classification![7:7],Classification![18:18]", "tag": "clean"},
             {"type": "filters.range", "inputs": ["clean"], "limits": "Classification[2:2]", "tag": "ground"},
@@ -146,10 +150,12 @@ def region(key, cfg):
             pdal(stages)
         except SystemExit as e:
             # A piece with no ground or no buildings (all lake) has nothing to write.
-            print(f"::warning::lidar {key}: piece {k + 1} skipped: {str(e)[:300]}", file=sys.stderr)
+            print(f"::warning::lidar {key}: piece {k + 1} skipped: {str(e)[:600]}", file=sys.stderr)
             continue
-        for arr, name in ((dtm, "dtm"), (top, "top")):
-            a = read(f"{tmp}/{name}.tif")
+        for arr, layer in ((dtm, "dtm"), (top, "top")):
+            a = read(f"{tmp}/{layer}.tif")
+            if k < 3:
+                note(f"lidar {key}: piece {k + 1} {layer}: " + ("missing" if a is None else f"{np.isfinite(a).mean():.0%} filled, {np.nanmin(a) if np.isfinite(a).any() else 'nan'}..{np.nanmax(a) if np.isfinite(a).any() else 'nan'}"))
             if a is not None:
                 a = a[:h_, :w_]
                 arr[j:j + a.shape[0], i:i + a.shape[1]] = a
@@ -167,6 +173,8 @@ def region(key, cfg):
     h = top - filled
     h[~np.isfinite(h)] = 0.0
     h = np.clip(h, 0.0, 6553.0)
+    if not np.isfinite(top).any():
+        raise SystemExit(f"{key}: no lidar points were read")
     note(f"lidar {key}: grid {h.shape[1]}x{h.shape[0]}, tallest {h.max():.1f} m, {np.mean(h > 2.5):.0%} of it above 2.5 m")
     os.makedirs(os.path.join(ROOT, "data", "lidar"), exist_ok=True)
     # Row 0 is the north edge (GDAL's order).
@@ -176,7 +184,7 @@ def region(key, cfg):
             "bounds_3857": [x0, y0, x1, y1],
             "res": RES,
             "units": "uint16 decimetres above the ground; row 0 is the north edge",
-            "survey": name,
+            "survey": survey,
             "buildings_marked": buildings,
             "source": "USGS 3D Elevation Program lidar (public domain), via the Entwine copies on AWS",
         },

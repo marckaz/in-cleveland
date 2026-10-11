@@ -1,0 +1,46 @@
+# Measures every building's height from USGS lidar and downloads sharp (half-metre) aerial
+# photos for each region, then commits them to data/lidar and data/aerial_hd. Run it by hand
+# (Actions > Fetch lidar and photos > Run workflow), or it runs when its scripts change.
+# Then `python3 tools/osm/bake.py <region>` builds the maps with them.
+name: Fetch lidar and photos
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [tools/geo/fetch_lidar.py, tools/geo/fetch_hd_imagery.py, .github/workflows/lidar.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-lidar
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: geo
+          create-args: python=3.12 pdal gdal numpy pillow shapely
+          cache-environment: true
+      - name: Sharp aerial photos
+        run: python tools/geo/fetch_hd_imagery.py
+      - name: Building heights from lidar
+        run: pdal --version && python tools/geo/fetch_lidar.py
+      - name: Commit the data
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "Lidar heights and sharp aerial photos"
+          git pull --rebase -q origin main
+          git push

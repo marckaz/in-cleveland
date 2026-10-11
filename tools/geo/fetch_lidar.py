@@ -63,13 +63,16 @@ def surveys(bbox):
     return out
 
 
+def one_line(t):
+    return t.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+
+
 def pdal(pipeline):
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(pipeline, f)
     r = subprocess.run(["pdal", "pipeline", f.name, "--nostream"], capture_output=True, text=True)
     if r.returncode != 0:
-        print(r.stdout[-3000:], r.stderr[-3000:], file=sys.stderr)
-        raise SystemExit(f"::error::pdal failed: {r.stderr[-400:]}")
+        raise SystemExit(f"pdal failed ({r.returncode}): {one_line(r.stderr[-600:])}")
     return r.stdout
 
 
@@ -116,31 +119,51 @@ def region(key, cfg):
     cls = classes(url, bounds)
     buildings = 6 in cls
     note(f"lidar {key}: classes {sorted(cls)}; buildings {'marked' if buildings else 'not marked'}")
-    tmp = tempfile.mkdtemp()
-    grid = {"resolution": RES, "bounds": bounds, "data_type": "float32", "nodata": -9999, "gdaldriver": "GTiff"}
-    stages = [
-        {"type": "readers.ept", "filename": url, "bounds": bounds, "resolution": READ_RES, "threads": 8},
-        # Not noise (7: low, 18: high).
-        {"type": "filters.range", "limits": "Classification![7:7],Classification![18:18]", "tag": "clean"},
-        {"type": "filters.range", "inputs": ["clean"], "limits": "Classification[2:2]", "tag": "ground"},
-        {"type": "writers.gdal", "inputs": ["ground"], "filename": f"{tmp}/dtm.tif", "output_type": "mean", **grid},
-    ]
-    if buildings:
-        stages += [
-            {"type": "filters.range", "inputs": ["clean"], "limits": "Classification[6:6]", "tag": "bld"},
-            {"type": "writers.gdal", "inputs": ["bld"], "filename": f"{tmp}/top.tif", "output_type": "max", **grid},
+    # Read it a kilometre square at a time (the whole region at once runs out of memory).
+    W, H = int(round((x1 - x0) / RES)), int(round((y1 - y0) / RES))
+    dtm = np.full((H, W), np.nan)
+    top = np.full((H, W), np.nan)
+    CH = 512  # cells per piece side
+    pieces = [(i, j) for j in range(0, H, CH) for i in range(0, W, CH)]
+    for k, (i, j) in enumerate(pieces):
+        w_, h_ = min(CH, W - i), min(CH, H - j)
+        cx0, cx1 = x0 + i * RES, x0 + (i + w_) * RES
+        cy1 = y1 - j * RES
+        cy0 = cy1 - h_ * RES
+        pb = f"([{cx0}, {cx1}], [{cy0}, {cy1}])"
+        tmp = tempfile.mkdtemp()
+        grid = {"resolution": RES, "bounds": pb, "data_type": "float32", "nodata": -9999, "gdaldriver": "GTiff"}
+        stages = [
+            {"type": "readers.ept", "filename": url, "bounds": pb, "resolution": READ_RES, "threads": 8},
+            # Not noise (7: low, 18: high).
+            {"type": "filters.range", "limits": "Classification![7:7],Classification![18:18]", "tag": "clean"},
+            {"type": "filters.range", "inputs": ["clean"], "limits": "Classification[2:2]", "tag": "ground"},
+            {"type": "writers.gdal", "inputs": ["ground"], "filename": f"{tmp}/dtm.tif", "output_type": "mean", **grid},
+            {"type": "filters.range", "inputs": ["clean"], "limits": "Classification[6:6]" if buildings else "Classification[0:31]", "tag": "tops"},
+            {"type": "writers.gdal", "inputs": ["tops"], "filename": f"{tmp}/top.tif", "output_type": "max", **grid},
         ]
-    else:
-        stages += [{"type": "writers.gdal", "inputs": ["clean"], "filename": f"{tmp}/top.tif", "output_type": "max", **grid}]
-    pdal(stages)
+        try:
+            pdal(stages)
+        except SystemExit as e:
+            # A piece with no ground or no buildings (all lake) has nothing to write.
+            print(f"::warning::lidar {key}: piece {k + 1} skipped: {str(e)[:300]}", file=sys.stderr)
+            continue
+        for arr, name in ((dtm, "dtm"), (top, "top")):
+            a = read(f"{tmp}/{name}.tif")
+            if a is not None:
+                arr[j:j + a.shape[0], i:i + a.shape[1]] = a[:h_, :w_]
+        if (k + 1) % 4 == 0 or k + 1 == len(pieces):
+            print(f"lidar {key}: {k + 1}/{len(pieces)} pieces", flush=True)
 
     # The ground everywhere: filled in under buildings and water from around them.
-    ds = gdal.Open(f"{tmp}/dtm.tif", gdal.GA_Update)
-    gdal.FillNodata(ds.GetRasterBand(1), None, maxSearchDist=400, smoothingIterations=2)
-    ds = None
-    dtm = read(f"{tmp}/dtm.tif")
-    top = read(f"{tmp}/top.tif")
-    h = top - dtm
+    drv = gdal.GetDriverByName("MEM").Create("", W, H, 1, gdal.GDT_Float32)
+    band = drv.GetRasterBand(1)
+    band.SetNoDataValue(-9999)
+    band.WriteArray(np.where(np.isfinite(dtm), dtm, -9999).astype(np.float32))
+    gdal.FillNodata(band, None, maxSearchDist=400, smoothingIterations=2)
+    filled = band.ReadAsArray().astype(np.float64)
+    filled[filled == -9999] = np.nan
+    h = top - filled
     h[~np.isfinite(h)] = 0.0
     h = np.clip(h, 0.0, 6553.0)
     note(f"lidar {key}: grid {h.shape[1]}x{h.shape[0]}, tallest {h.max():.1f} m, {np.mean(h > 2.5):.0%} of it above 2.5 m")
@@ -162,9 +185,17 @@ def region(key, cfg):
 
 
 def main():
+    import traceback
     keys = sys.argv[1:] or list(REGIONS)
+    failed = []
     for k in keys:
-        region(k, REGIONS[k])
+        try:
+            region(k, REGIONS[k])
+        except BaseException as e:
+            print(f"::error::lidar {k}: {one_line(str(e))}%0A{one_line(traceback.format_exc()[-1200:])}", file=sys.stderr)
+            failed.append(k)
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

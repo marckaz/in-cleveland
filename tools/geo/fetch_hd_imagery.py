@@ -125,13 +125,17 @@ def main():
     os.makedirs(os.path.join(ROOT, "data", "aerial_hd"), exist_ok=True)
     for k in keys:
         bbox = REGIONS[k]["bbox"]
+        done = os.path.join(ROOT, "data", "aerial_hd", f"{k}.json")
+        if os.path.exists(done) and json.load(open(done)).get("bbox_asked") == bbox and not os.environ.get("FORCE"):
+            note(f"{k}: already downloaded")
+            continue
         try:
             img, bb, src = ohio(bbox)
         except Exception as e:
             print(f"::warning::{k}: Ohio imagery failed ({e}); using USGS zoom 18", file=sys.stderr)
             img, bb, src = usgs(bbox)
         img.save(os.path.join(ROOT, "data", "aerial_hd", f"{k}.jpg"), quality=82, optimize=True)
-        json.dump({"bbox": bb, "source": src, "m_per_px": M_PER_PX}, open(os.path.join(ROOT, "data", "aerial_hd", f"{k}.json"), "w"))
+        json.dump({"bbox": bb, "bbox_asked": bbox, "source": src, "m_per_px": M_PER_PX}, open(os.path.join(ROOT, "data", "aerial_hd", f"{k}.json"), "w"))
         note(f"{k}: {img.size[0]}x{img.size[1]} from {src}")
 
 

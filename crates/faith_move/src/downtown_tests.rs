@@ -357,3 +357,49 @@ fn debug_zip() {
         }
     }
 }
+
+#[test]
+#[ignore]
+fn debug_one_zip() {
+    let key = std::env::var("REGION").unwrap_or("lakewood".into());
+    let x: f32 = std::env::var("ZX").unwrap().parse().unwrap();
+    let t = town_of(&key);
+    let &(a, b) = t.map.zips.iter().find(|z| (z.0.x - x).abs() < 0.01).unwrap();
+    let along = Vec3::new(b.x - a.x, 0.0, b.z - a.z).normalize();
+    let start = Vec3::new(a.x, a.y - 2.8, a.z) - along * 5.0;
+    println!("zip {a:?} -> {b:?}; ground at start {:.2}, roof under start {:.2}", t.map.ground.at(start.x, start.z), t.roof(start.x, start.z));
+    let mut jumped = false;
+    let mut k = 0;
+    t.run(start, along, 6.0, |c| {
+        k += 1;
+        if k % 10 == 0 { println!("{:?} {:?}", c.feet, c.state); }
+        let mut i = fwd();
+        let to = Vec3::new(a.x - c.feet.x, 0.0, a.z - c.feet.z);
+        if !jumped && to.dot(along) < 1.8 && c.state == State::Ground { i.jump_pressed = true; jumped = true; }
+        if matches!(c.state, State::ZipLine { .. }) { return Input::default(); }
+        i
+    });
+    for p in t.map.props.iter().filter(|p| (p.base - start).length() < 8.0) {
+        println!("  prop kind {} solid {} at {:?} size {:?}", p.kind, p.solid, p.base, p.size);
+    }
+}
+
+#[test]
+#[ignore]
+fn debug_near() {
+    let key = std::env::var("REGION").unwrap_or("lakewood".into());
+    let f: Vec<f32> = std::env::var("P").unwrap().split(',').map(|v| v.parse().unwrap()).collect();
+    let p = Vec3::new(f[0], f[1], f[2]);
+    let t = town_of(&key);
+    for (a, b) in &t.map.zips {
+        if (Vec3::new(a.x, p.y, a.z) - p).length() < 12.0 || (Vec3::new(b.x, p.y, b.z) - p).length() < 12.0 {
+            println!("zip {a:?} -> {b:?}");
+        }
+    }
+    for (base, top, n) in &t.map.ladders {
+        if (Vec3::new(base.x, p.y, base.z) - p).length() < 12.0 { println!("ladder {base:?} top {top} n {n:?}"); }
+    }
+    for (_, b, _) in t.map.buildings.iter().filter(|(_, b, _)| b.rings[0].iter().any(|q| (q.0 - p.x).abs() < 12.0 && (q.1 - p.z).abs() < 12.0)) {
+        println!("bldg base {:.1} top {:.1} {:?}", b.base, b.top, &b.rings[0][..b.rings[0].len().min(6)]);
+    }
+}

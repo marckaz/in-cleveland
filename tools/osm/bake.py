@@ -249,6 +249,93 @@ CELL = 16.0       # the ground grid
 TILE = 512.0      # one aerial photo tile, metres a side
 
 
+class Lidar:
+    """How tall things stand above the ground, measured by USGS lidar (tools/geo/fetch_lidar.py):
+    a grid of heights over the region, or nothing if it hasn't been downloaded."""
+
+    def __init__(self):
+        png, meta = f"data/lidar/{REGION}.png", f"data/lidar/{REGION}.json"
+        self.ok = os.path.exists(png) and os.path.exists(meta)
+        if not self.ok:
+            print("lidar: none downloaded (heights are OpenStreetMap's or guesses)")
+            return
+        from PIL import Image
+        m = json.load(open(meta))
+        self.h = np.array(Image.open(png)).astype(np.float32) / 10.0
+        # Returns from things in the air (birds, low cloud) over a patch of the survey: nothing
+        # here stands taller than Key Tower's 289 m roof, so higher readings aren't buildings.
+        # Around such a patch the cloud's lower edge reads as tall roofs too, so everything
+        # within 60 m of a reading in the air counts as not measured.
+        air = self.h > 300.0
+        if air.any():
+            r = int(round(60.0 / (m["res"] * math.cos(math.radians(LAT0)))))
+            ii = np.pad(air.astype(np.int32), ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+            H, W = air.shape
+            y0, y1 = np.clip(np.arange(H) - r, 0, H), np.clip(np.arange(H) + r + 1, 0, H)
+            x0, x1 = np.clip(np.arange(W) - r, 0, W), np.clip(np.arange(W) + r + 1, 0, W)
+            box_sum = ii[y1][:, x1] - ii[y0][:, x1] - ii[y1][:, x0] + ii[y0][:, x0]
+            near_air = box_sum > 0
+            print(f"lidar: {int(air.sum())} cells read in the air (cloud or birds); ignoring {near_air.mean():.1%} of the area around them")
+            self.h[near_air] = np.nan
+        self.x0, self.y0, self.x1, self.y1 = m["bounds_3857"]
+        self.res = m["res"]
+        self.marked = m.get("buildings_marked", False)
+        print(f"lidar: {m.get('survey')}, {self.h.shape[1]}x{self.h.shape[0]} cells, buildings {'marked' if self.marked else 'not marked'}")
+
+    def px(self, x, z):
+        lat, lon = LAT0 - z / M_LAT, LON0 + x / M_LON
+        mx = math.radians(lon) * 6378137.0
+        my = math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * 6378137.0
+        return (mx - self.x0) / self.res, (self.y1 - my) / self.res
+
+    def cells(self, poly):
+        """The grid's values inside a polygon (NaN where nothing was measured)."""
+        from PIL import Image, ImageDraw
+        if poly.is_empty:
+            return np.array([])
+        if not isinstance(poly, Polygon):
+            parts = [self.cells(q) for q in explode(poly)]
+            return np.concatenate(parts) if parts else np.array([])
+        rings = [[self.px(x, z) for x, z in poly.exterior.coords]] + [[self.px(x, z) for x, z in r.coords] for r in poly.interiors]
+        xs = [c[0] for c in rings[0]]
+        ys = [c[1] for c in rings[0]]
+        c0, r0 = max(0, int(min(xs)) - 1), max(0, int(min(ys)) - 1)
+        c1, r1 = min(self.h.shape[1], int(max(xs)) + 2), min(self.h.shape[0], int(max(ys)) + 2)
+        if c1 - c0 < 1 or r1 - r0 < 1:
+            return np.array([])
+        mask = Image.new("L", (c1 - c0, r1 - r0), 0)
+        d = ImageDraw.Draw(mask)
+        d.polygon([(x - c0, y - r0) for x, y in rings[0]], fill=1)
+        for r in rings[1:]:
+            d.polygon([(x - c0, y - r0) for x, y in r], fill=0)
+        return self.h[r0:r1, c0:c1][np.array(mask, dtype=bool)]
+
+    def height(self, poly):
+        """The measured height of a roof over this footprint, or None where the lidar doesn't
+        see a building there (gone, not built yet in 2019, the outline is off, or the survey
+        caught something in the air over it)."""
+        if not self.ok:
+            return None
+        # Stay off the edges: the walls' cells mix roof and street.
+        inner = poly.buffer(-1.0)
+        vals = self.cells(inner if not inner.is_empty and inner.area > 0.4 * poly.area else poly)
+        seen = vals[np.isfinite(vals)]
+        if len(seen) < max(3, 0.6 * len(vals)):
+            return None
+        up = seen[seen > 2.2]
+        if len(up) < 0.45 * len(seen):
+            return None
+        # Somewhere just outside a real building there's street, yard or a lower roof; a
+        # cloud or a flock reads high all round.
+        ring = self.cells(poly.buffer(9.0).difference(poly.buffer(2.0)))
+        ring = ring[np.isfinite(ring)]
+        if len(ring) >= 6 and np.percentile(ring, 15) > 25.0:
+            return None
+        # Most of the roof, not its chimneys, spires or the tree over one corner. A house's
+        # pitched roof is drawn flat, at half way up it (the eaves to the ridge).
+        return float(np.percentile(up, 50 if poly.area < 250 else 70))
+
+
 class Terrain:
     """The ground: a CELL-metre grid of heights (metres, relative to the origin's ground),
     triangulated the way the game does it, so things placed here sit exactly on what you
@@ -304,20 +391,25 @@ class Terrain:
 
 
 def cut_aerial(t):
-    """The aerial photo cut into TILE-metre ground tiles (256 px each); returns their (ix, iz)."""
-    jpg = f"data/aerial/{REGION}.jpg"
+    """The aerial photo cut into TILE-metre ground tiles: 256 px each for far off and, where
+    the sharp photo (tools/geo/fetch_hd_imagery.py) is downloaded, 1024 px each (half a metre
+    a pixel) for near by. Returns [(ix, iz, has_sharp)] and a colour lookup."""
+    import shutil
+    from PIL import Image, ImageEnhance
+    Image.MAX_IMAGE_PIXELS = None
+    hd = f"data/aerial_hd/{REGION}.jpg"
+    jpg = hd if os.path.exists(hd) else f"data/aerial/{REGION}.jpg"
     if not os.path.exists(jpg):
         print("aerial: none downloaded")
         return [], None
-    from PIL import Image, ImageEnhance
+    sharp = jpg == hd
     img = Image.open(jpg).convert("RGB")
     # A touch more contrast and colour: lit again by the game's sun, the photo looks flat.
     img = ImageEnhance.Color(ImageEnhance.Contrast(img).enhance(1.15)).enhance(1.12)
-    s, w, n, e = json.load(open(f"data/aerial/{REGION}.json"))["bbox"]
+    s, w, n, e = json.load(open(jpg[:-4] + ".json"))["bbox"]
     W, H = img.size
-    os.makedirs(AERIAL_OUT, exist_ok=True)
-    for f in os.listdir(AERIAL_OUT):
-        os.remove(os.path.join(AERIAL_OUT, f))
+    shutil.rmtree(AERIAL_OUT, ignore_errors=True)
+    os.makedirs(AERIAL_OUT + "/hd" if sharp else AERIAL_OUT, exist_ok=True)
     tiles = []
     span_x = (t.nx - 1) * CELL
     span_z = (t.nz - 1) * CELL
@@ -327,10 +419,14 @@ def cut_aerial(t):
             lon0, lon1 = LON0 + tx0 / M_LON, LON0 + (tx0 + TILE) / M_LON
             lat0, lat1 = LAT0 - tz0 / M_LAT, LAT0 - (tz0 + TILE) / M_LAT  # north edge, south edge
             box_px = ((lon0 - w) / (e - w) * W, (n - lat0) / (n - s) * H, (lon1 - w) / (e - w) * W, (n - lat1) / (n - s) * H)
-            tile = img.transform((256, 256), Image.EXTENT, box_px, Image.BILINEAR)
-            tile.save(f"{AERIAL_OUT}/{ix}_{iz}.jpg", quality=82)
-            tiles.append((ix, iz))
-    print(f"aerial: {len(tiles)} tiles of {TILE:.0f} m")
+            if sharp:
+                big = img.transform((1024, 1024), Image.EXTENT, box_px, Image.BILINEAR)
+                big.save(f"{AERIAL_OUT}/hd/{ix}_{iz}.jpg", quality=80)
+                big.resize((256, 256), Image.LANCZOS).save(f"{AERIAL_OUT}/{ix}_{iz}.jpg", quality=82)
+            else:
+                img.transform((256, 256), Image.EXTENT, box_px, Image.BILINEAR).save(f"{AERIAL_OUT}/{ix}_{iz}.jpg", quality=82)
+            tiles.append((ix, iz, sharp))
+    print(f"aerial: {len(tiles)} tiles of {TILE:.0f} m{' with sharp (0.5 m) versions' if sharp else ''}")
     px = img.load()
 
     def colour_at(x, z):
@@ -419,17 +515,30 @@ def main():
                 continue
             if have_tree is not None and any(have[i].intersects(p) and have[i].intersection(p).area > 0.1 * p.area for i in have_tree.query(p)):
                 continue
-            t = {"building": "house" if p.area < 260 else "yes"}
+            t = {"building": "house" if p.area < 260 else "yes", "_estimate": True}
             if hgt and hgt > 2.5:
                 t["height"] = str(min(hgt, 60.0))
             kept.append((t, p))
             added += 1
         print(f"footprints: {added} buildings added where OpenStreetMap has none")
     blds = []
+    lidar = Lidar()
+    sources = defaultdict(int)
+    measured_list = []
     for t, p in kept + parts:
         if t.get("building") in ("construction", "roof") or t.get("building:part") == "roof":
             continue
         base_rel, h, guessed = height_of(t, p)
+        # Measured beats guessed: the lidar's height wherever OSM doesn't give one outright
+        # (levels x 3.5 m, a guess, or Microsoft's estimate). Parts that start above the
+        # ground (a tower on its podium) keep OSM's numbers.
+        measured = lidar.height(p) if base_rel == 0.0 and ("height" not in t or t.get("_estimate")) else None
+        if measured is not None:
+            h, guessed = max(measured, 2.5), False
+            sources["lidar"] += 1
+            measured_list.append((h, p.area, t.get("name", "?"), p.representative_point()))
+        else:
+            sources["guessed" if guessed else "osm"] += 1
         name = t.get("name", "")
         look = LOOK_LANDMARK if name in LANDMARKS else (LOOK_GLASS if h > 60 else LOOK_WALL)
         for q in simplify(p):
@@ -442,6 +551,13 @@ def main():
             base = gmin - 0.6 if grounded else g + base_rel
             blds.append({"poly": q, "base": base, "top": g + h, "h": h, "grounded": grounded, "look": look, "name": name, "guessed": guessed})
     print(f"buildings: {len(blds)} prisms ({sum(b['guessed'] for b in blds)} with guessed heights)")
+    if measured_list:
+        hs = np.array([m[0] for m in measured_list])
+        small = np.array([m[0] for m in measured_list if m[1] < 250])
+        print(f"lidar heights: median {np.median(hs):.1f} m, houses (<250 m2) median {np.median(small) if len(small) else 0:.1f} m, p95 {np.percentile(small, 95) if len(small) else 0:.1f} m")
+        for m in sorted(measured_list, key=lambda m: -m[0])[:6]:
+            print(f"  tall: {m[0]:.0f} m {m[2]} ({m[1]:.0f} m2) at {m[3].x:.0f}, {m[3].y:.0f}")
+    print(f"heights: {sources['lidar']} measured by lidar, {sources['osm']} from OpenStreetMap, {sources['guessed']} guessed")
 
     # ---- flat shapes: streets, water, parks
     widths = {"motorway": 18, "trunk": 16, "primary": 14, "secondary": 12, "tertiary": 10, "unclassified": 8,
@@ -518,7 +634,7 @@ def main():
         from shapely.ops import substring
         full = LineString([(a[0], a[2]), (b[0], b[2])])
         L = full.length
-        line = substring(full, 3.0, L)
+        line = substring(full, 0.5, L)
         if line.is_empty or line.length < 1.0:
             return False
         # Her body is half a metre wide, and swings: keep 1.5 m clear either side.
@@ -588,12 +704,27 @@ def main():
             landing = [(sb[0] + ux * d, sb[1] + uz * d) for d in (1.0, 2.5, 4.0)]
             if not all(abs(roof_at(*p) - b["top"]) < 0.3 for p in landing):
                 continue
+            # Nothing taller anywhere across the run-up or the landing, not just along the
+            # middle of them (a taller corner beside the run-up turns it into a wallrun).
+            run_strip = LineString([(sa[0] - ux * 7.5, sa[1] - uz * 7.5), (sa[0] + ux * 0.5, sa[1] + uz * 0.5)]).buffer(0.9, cap_style=2)
+            land_strip = LineString([(sb[0] - ux * 4.0, sb[1] - uz * 4.0), (sb[0] + ux * 5.0, sb[1] + uz * 5.0)]).buffer(1.3, cap_style=2)
+            if any(k != i and blds[k]["top"] > a["top"] + 0.3 and blds[k]["poly"].intersects(run_strip) for k in tree.query(run_strip)):
+                continue
+            if any(k != j and blds[k]["top"] > b["top"] + 0.3 and blds[k]["poly"].intersects(land_strip) for k in tree.query(land_strip)):
+                continue
             A = (sa[0], a["top"] + 2.8, sa[1])
             B = (sb[0], b["top"] + 2.6, sb[1])
             if not clear_line(A, B, {i, j}):
                 continue
-            # Not on top of another cable.
-            if any(math.dist((A[0], A[2]), (z[0][0], z[0][2])) < 6 for z in zips):
+            # Not on top of another cable: every mast well apart from every other, and none
+            # standing in this one's run-up or landing.
+            ends_here = [(A[0], A[2]), (B[0], B[2])]
+            masts = [(z[k][0], z[k][2]) for z in zips for k in (0, 1)]
+            if any(math.dist(e, m) < 8.0 for e in ends_here for m in masts):
+                continue
+            if any(run_strip.distance(Point(m)) < 0.8 or land_strip.distance(Point(m)) < 0.8 for m in masts):
+                continue
+            if any(LineString([(z[0][0], z[0][2]), (z[0][0] - (z[1][0] - z[0][0]) / max(1e-6, math.dist((z[0][0], z[0][2]), (z[1][0], z[1][2]))) * 8.0, z[0][2] - (z[1][2] - z[0][2]) / max(1e-6, math.dist((z[0][0], z[0][2]), (z[1][0], z[1][2]))) * 8.0)]).distance(Point(e)) < 1.5 for z in zips for e in ends_here):
                 continue
             zips.append((A, B))
             starts[i] += 1
@@ -840,9 +971,11 @@ def main():
     for A, B in zips:
         dx, dz = B[0] - A[0], B[2] - A[2]
         n = math.hypot(dx, dz) or 1.0
-        for d in range(-8, 0):  # the run-up behind the mast
+        for d in range(-8, 2):  # the run-up behind the mast
             keep_clear.append((A[0] + dx / n * d, A[2] + dz / n * d, 1.8))
-        for d in range(0, 6):  # the landing
+        for d in range(0, int(n) + 1, 2):  # under the cable: nothing on a roof below to hit
+            keep_clear.append((A[0] + dx / n * d, A[2] + dz / n * d, 1.8))
+        for d in range(-4, 7):  # the landing
             keep_clear.append((B[0] + dx / n * d, B[2] + dz / n * d, 2.2))
     for _, (x, y, z), _ in [sp for sp in spots if sp]:
         keep_clear.append((x, z, 6.0))
@@ -1025,14 +1158,14 @@ def main():
         return max(-32767, min(32767, int(round(v * 10))))
 
     tiles, colour_at = cut_aerial(terrain)
-    out = bytearray(b"CLE5")
+    out = bytearray(b"CLE6")
     out += struct.pack("<4f", x0, z0, x1, z1)
     # The ground: grid origin, cell, size, lake level, heights; then the aerial tiles.
     out += struct.pack("<3fII?f", terrain.gx0, terrain.gz0, CELL, terrain.nx, terrain.nz, terrain.real, terrain.lake)
     out += terrain.h.astype("<f4").tobytes()
     out += struct.pack("<fI", TILE, len(tiles))
-    for ix, iz in tiles:
-        out += struct.pack("<HH", ix, iz)
+    for ix, iz, sharp in tiles:
+        out += struct.pack("<HHB", ix, iz, 1 if sharp else 0)
     out += struct.pack("<I", len(blds))
     for b in blds:
         rings, tris = tri_poly(b["poly"])

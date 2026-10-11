@@ -6,6 +6,12 @@ A Mirror's Edge-style rooftop run across Cleveland, Ohio: from the West Side Mar
 
 It's a fork of [faith-runner](https://github.com/tnrjns/faith-runner) by tnrjns, which did all the work on the movement: Mirror's Edge-style first-person movement in Rust, with a Bevy greybox course to test it in. The movement lives in its own crate, `crates/faith_move`, which only depends on `glam`. It knows nothing about Bevy, so the same controller can later be dropped into IW4L or anything else that can hand it collision boxes.
 
+## What's new in V3
+
+- **Real building heights, measured by laser**: building heights now come from the USGS lidar survey of Ohio (2019), the laser scan flown over the whole state. 97% of the buildings on the three city maps are measured rather than guessed, from a two-and-a-half-storey house in Lakewood (about 9 m) to 200 Public Square (188 m). Where a building is newer than the survey, the survey is unclear, or OpenStreetMap gives an exact height, that's used instead.
+- **Sharp aerial photos**: the ground is now the State of Ohio's own aerial photography at half a metre a pixel (four times sharper each way): you can see individual parked cars, crosswalks and the West Side Market's striped roof. The sharp tiles load only around you, so the browser doesn't download the whole city, and every photo has proper mipmaps, so the ground no longer shimmers into the distance.
+- **More ziplines**: with real heights the roofs vary, so there are far more gentle drops to ride (about 870 across the three maps), each checked by a scripted ride.
+
 ## What's new in V2.1
 
 - **Three real neighbourhoods**: Downtown, **Ohio City & Tremont** (the West Side Market, Lorain, Professor Ave, Lincoln Park, Hingetown) and **Lakewood** (Detroit Ave, Madison, Clifton, the bluffs at Lakewood Park), each at true scale from OpenStreetMap with ziplines, a ladder onto every roof, and cars, trees and rooftop units. See [The city maps](#the-city-maps-real-cleveland).
@@ -243,11 +249,13 @@ Three neighbourhoods at true scale, built by the same code (`crates/faith_move/s
 
 Every building stands on its real footprint at its real height, from [OpenStreetMap](https://www.openstreetmap.org/copyright): OSM's `height` where it has one, otherwise `building:levels` x 3.5 m, otherwise a guess from the kind of building (most of the West Side and Lakewood are houses, two and a half storeys). Where OpenStreetMap hasn't mapped the buildings yet (most of north Lakewood's houses, about 11,000 of them), the gaps are filled from [Microsoft's Global ML Building Footprints](https://github.com/microsoft/GlobalMLBuildingFootprints), with their estimated heights, but only where OSM has nothing.
 
-**The ground** is real: heights from the USGS 3D Elevation Program (via the AWS Terrain Tiles), on a 16 m grid. Buildings stand on it, the lake and river sit at Lake Erie's level (174 m), and you collide with it as a heightfield, so you can't sink through it on a slope. **Aerial photos** from the USGS National Map (public domain, about 2 m per pixel) are laid over it in 512 m tiles (`assets/aerial/<region>/`), loaded as you play.
+**Heights** are measured: `tools/geo/fetch_lidar.py` reads the USGS 3DEP lidar survey of Ohio (2019, public domain) and works out how tall everything stands above the ground on a 1.5 m grid. The bake takes each building's height as most of its roof (the 70th percentile of the cells inside it, so chimneys, spires and an overhanging tree don't count), unless OpenStreetMap gives an exact height or the survey doesn't show a building there. Readings from something in the air (a patch of low cloud over southern Lakewood) are thrown out with the area around them.
+
+**The ground** is real: heights from the USGS 3D Elevation Program (via the AWS Terrain Tiles), on a 16 m grid. Buildings stand on it, the lake and river sit at Lake Erie's level (174 m), and you collide with it as a heightfield, so you can't sink through it on a slope. **Aerial photos** from the Ohio Statewide Imagery Program (half a metre a pixel, "available for public use") are laid over it in 512 m tiles: a 256 px version of every tile for the distance (`assets/aerial/<region>/`) and a 1024 px one (`assets/aerial/<region>/hd/`) that loads when you come within about 400 m and is dropped again when you leave. The game builds mipmaps for each photo as it loads and samples them anisotropically.
 
 Real streets are far too wide to jump, so there's a parkour layer on top, placed by the bake script:
 
-- **Ziplines** (red masts) from a roof down to a lower roof across the street, wherever the drop is gentle enough to ride, there's a run-up behind the mast, room to land, and nothing in the way of your body on the ride.
+- **Ziplines** (red masts) from a roof down to a lower roof across the street, wherever the drop is gentle enough to ride, there's a clear run-up behind the mast, room to land, no other mast nearby, and nothing (no building, no rooftop unit) in the way of your body on the ride.
 - **Ladders** onto every roof: from the street, or up from the next roof along, chained until the roofs you can stand on connect (Downtown: all but eight slivers of skyscraper crowns; Ohio City & Tremont and Lakewood: every one). The skyscrapers get long service ladders. Each ladder has a clear metre-wide way in.
 - **Things in the streets and on the roofs**: rooftop AC units, vents, water tanks and stair huts; parked cars; dumpsters by the alleys; and the trees, benches, bus shelters, hydrants and bins OpenStreetMap maps, plus street lamps along the main streets. All solid: vault the cars, climb the huts.
 
@@ -255,13 +263,13 @@ It's a free run: no course and no finish. **1–0** jump between landmarks (on D
 
 How it's made:
 
-1. `tools/osm/regions.json` lists the regions (bounding box and origin). `tools/osm/fetch.py <region>` downloads each from the Overpass API into `data/osm/<region>.json`; `tools/geo/fetch_geo.py <region>` downloads its elevation (`data/terrain/`) and aerial photo (`data/aerial/`); `tools/geo/fetch_footprints.py` downloads Microsoft's footprints for all of them (`data/footprints/`). The **Fetch map data** workflow runs both on GitHub and commits the result.
+1. `tools/osm/regions.json` lists the regions (bounding box and origin). `tools/osm/fetch.py <region>` downloads each from the Overpass API into `data/osm/<region>.json`; `tools/geo/fetch_geo.py <region>` downloads its elevation (`data/terrain/`) and aerial photo (`data/aerial/`); `tools/geo/fetch_footprints.py` downloads Microsoft's footprints for all of them (`data/footprints/`). The **Fetch lidar and photos** workflow runs `tools/geo/fetch_hd_imagery.py` (the sharp photos, `data/aerial_hd/`) and `tools/geo/fetch_lidar.py` (heights, `data/lidar/`; it needs PDAL, which the workflow installs). The **Fetch map data** workflow runs both on GitHub and commits the result.
 2. `tools/osm/bake.py <region>` (needs `pip install mapbox-earcut shapely numpy pillow`) turns that into `crates/faith_move/data/<region>.bin`: the ground grid, buildings as triangulated prisms standing on it (3D `building:part`s stand in for the outlines they fill), the ziplines, ladders, objects and spawn points; and cuts the photo into `assets/aerial/<region>/`.
 3. The game reads the file at startup, and collides with the buildings as triangles (`MeshWorld`), so walls at any angle take wallruns, climbs and ledge grabs.
 
 `crates/faith_move/src/downtown_tests.rs` checks, on each region, that every spawn point holds you, the ground is where the elevation data says and you stay on it running up and down slopes, the ladders get you onto their roofs, every zipline carries you across and sets you down on the far roof, cars are solid, and a fall off a tall roof kills.
 
-Map data © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright). Extra building footprints: Microsoft, also under the ODbL. Elevation: USGS 3DEP and the other sources of the [AWS Terrain Tiles](https://github.com/tilezen/joerd/blob/master/docs/attribution.md). Aerial photos: USGS The National Map (public domain).
+Map data © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright). Extra building footprints: Microsoft, also under the ODbL. Elevation: USGS 3DEP and the other sources of the [AWS Terrain Tiles](https://github.com/tilezen/joerd/blob/master/docs/attribution.md). Building heights: USGS 3DEP lidar (public domain). Aerial photos: Ohio Statewide Imagery Program, State of Ohio (available for public use); USGS The National Map (public domain) as a fallback.
 
 ### Rooftops
 
@@ -390,7 +398,7 @@ src/me_viewmodel.rs loads Faith's body from your install, skins and draws it whe
 src/audio.rs       Mirror's Edge sounds: animation cues, surfaces, landings, breathing, wind, music
 src/settings.rs    the launch/Esc settings menu (volumes, sensitivity, FOV)
 tools/osm/         fetch.py downloads a region from OpenStreetMap; bake.py builds its map; regions.json lists them
-tools/geo/         fetch_geo.py downloads a region's elevation and aerial photo
+tools/geo/         fetch_geo.py (elevation, aerial photo), fetch_hd_imagery.py (sharp photos), fetch_lidar.py (building heights), fetch_footprints.py
 assets/aerial/     the aerial photo tiles the city maps draw on the ground
 crates/me_assets/  UE3 readers: packages, skeletal meshes, animations, morphs, textures, sounds
 crates/faith_anim/ Mirror's Edge's animation driver, body and camera placement (Rig), and which sounds play when

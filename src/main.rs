@@ -55,7 +55,8 @@ fn main() {
             Startup,
             (setup_world, setup_hud, viewmodel::setup, me_viewmodel::setup, settings::setup, audio::setup, capture::setup).chain(),
         );
-    let game = (switch_level, play, swing_doors, viewmodel::animate, me_viewmodel::animate, audio::play, update_hud).chain();
+    app.init_resource::<PendingMips>();
+    let game = (switch_level, play, swing_doors, aerial_detail, photo_mipmaps, viewmodel::animate, me_viewmodel::animate, audio::play, update_hud).chain();
     #[cfg(feature = "prologue")]
     {
         app.add_plugins((me_level::MeLevelPlugin, me_post::MePostPlugin))
@@ -281,7 +282,7 @@ fn spawn_ground(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &
     let per = (g.tile / g.cell).round().max(1.0) as usize;
     let tiles_x = (g.nx - 1).div_ceil(per);
     let tiles_z = (g.nz - 1).div_ceil(per);
-    let photo: std::collections::HashMap<(u32, u32), &str> = g.tiles.iter().map(|(ix, iz, p)| ((*ix, *iz), p.as_str())).collect();
+    let photo: std::collections::HashMap<(u32, u32), &greybox::PhotoTile> = g.tiles.iter().map(|t| ((t.ix, t.iz), t)).collect();
     let plain = materials.add(StandardMaterial { base_color: Color::srgb(0.55, 0.58, 0.52), perceptual_roughness: 1.0, ..default() });
     for tz in 0..tiles_z {
         for tx in 0..tiles_x {
@@ -312,18 +313,23 @@ fn spawn_ground(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &
                 .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
                 .with_inserted_indices(Indices::U32((0..n).collect()));
-            let material = match photo.get(&(tx as u32, tz as u32)) {
-                Some(path) => materials.add(StandardMaterial {
-                    // The photos already have the sun in them: darker, so they don't wash out.
-                    base_color: Color::srgb(0.66, 0.66, 0.66),
-                    base_color_texture: Some(assets.load(path.to_string())),
-                    perceptual_roughness: 1.0,
-                    reflectance: 0.2,
-                    ..default()
-                }),
-                None => plain.clone(),
-            };
-            commands.spawn((LevelGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(material)));
+            let mesh = meshes.add(mesh);
+            match photo.get(&(tx as u32, tz as u32)) {
+                Some(t) => {
+                    let image: Handle<Image> = assets.load(t.path.clone());
+                    let far = materials.add(photo_material(image.clone()));
+                    let min = Vec2::new(g.x0 + tx as f32 * g.tile, g.z0 + tz as f32 * g.tile);
+                    commands.spawn((
+                        LevelGeom,
+                        Mesh3d(mesh),
+                        MeshMaterial3d(far.clone()),
+                        AerialTile { min, max: min + Vec2::splat(g.tile), far, far_image: image, sharp: t.sharp.clone(), near: None },
+                    ));
+                }
+                None => {
+                    commands.spawn((LevelGeom, Mesh3d(mesh), MeshMaterial3d(plain.clone())));
+                }
+            }
         }
     }
     if let Some(lake) = g.lake {
@@ -332,6 +338,135 @@ fn spawn_ground(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &
         let water = Aabb::new(Vec3::new(x0, lake - 0.05, z0), Vec3::new(x1, lake, z1));
         commands.spawn((LevelGeom, Mesh3d(meshes.add(box_mesh(&water))), MeshMaterial3d(mats.water.clone())));
     }
+}
+
+/// The material for a photo of the ground.
+fn photo_material(image: Handle<Image>) -> StandardMaterial {
+    StandardMaterial {
+        // The photos already have the sun in them: darker, so they don't wash out.
+        base_color: Color::srgb(0.66, 0.66, 0.66),
+        base_color_texture: Some(image),
+        perceptual_roughness: 1.0,
+        reflectance: 0.2,
+        ..default()
+    }
+}
+
+/// One 512 m square of photographed ground: the whole-map photo from afar, the sharp one
+/// (loaded only while you're near) close up.
+#[derive(Component)]
+struct AerialTile {
+    min: Vec2,
+    max: Vec2,
+    far: Handle<StandardMaterial>,
+    far_image: Handle<Image>,
+    sharp: Option<String>,
+    /// The sharp photo, while it's wanted: (image, its material once the image is in).
+    near: Option<(Handle<Image>, Option<Handle<StandardMaterial>>)>,
+}
+
+/// Within this of a tile (metres), its sharp photo loads; beyond FAR_SHARP it's dropped again.
+const NEAR_SHARP: f32 = 380.0;
+const FAR_SHARP: f32 = 620.0;
+
+/// Sharp photos in near the camera, out again far off (so the browser only downloads and
+/// holds what's around you).
+fn aerial_detail(
+    mut tiles: Query<(&mut AerialTile, &mut MeshMaterial3d<StandardMaterial>)>,
+    camera: Query<&Transform, With<PlayerCamera>>,
+    assets: Res<AssetServer>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut mips: ResMut<PendingMips>,
+) {
+    let Ok(cam) = camera.single() else { return };
+    let at = Vec2::new(cam.translation.x, cam.translation.z);
+    for (mut t, mut mat) in &mut tiles {
+        let Some(path) = t.sharp.clone() else { continue };
+        let d = (t.min - at).max(at - t.max).max(Vec2::ZERO).length();
+        if d < NEAR_SHARP && t.near.is_none() {
+            let image: Handle<Image> = assets.load(path);
+            mips.0.insert(image.id());
+            t.near = Some((image, None));
+        } else if d > FAR_SHARP && t.near.is_some() {
+            t.near = None;
+            mat.0 = t.far.clone();
+        }
+        // Swap to the sharp photo once it's in (never to a blank while it loads).
+        if let Some((image, None)) = &t.near {
+            if assets.is_loaded_with_dependencies(image.id()) && !mips.0.contains(&image.id()) {
+                let m = materials.add(photo_material(image.clone()));
+                mat.0 = m.clone();
+                t.near = Some((image.clone(), Some(m)));
+            }
+        }
+        if !mips.0.contains(&t.far_image.id()) && !mips.1.contains(&t.far_image.id()) {
+            mips.0.insert(t.far_image.id());
+        }
+    }
+}
+
+/// Photos still to get their smaller copies (.0), and ones done (.1).
+#[derive(Resource, Default)]
+struct PendingMips(std::collections::HashSet<AssetId<Image>>, std::collections::HashSet<AssetId<Image>>);
+
+/// Gives each loaded photo its mipmaps (halved copies down to a pixel) and smooth, anisotropic
+/// sampling: without them the ground shimmers and crawls into the distance.
+fn photo_mipmaps(mut images: ResMut<Assets<Image>>, mut mips: ResMut<PendingMips>) {
+    let ready: Vec<AssetId<Image>> = mips.0.iter().copied().filter(|id| images.get(*id).is_some()).collect();
+    for id in ready {
+        mips.0.remove(&id);
+        mips.1.insert(id);
+        let Some(mut img) = images.get_mut(id) else { continue };
+        add_mipmaps(&mut img);
+    }
+}
+
+fn add_mipmaps(img: &mut Image) {
+    use bevy::render::render_resource::TextureFormat as F;
+    if img.texture_descriptor.mip_level_count > 1 || !matches!(img.texture_descriptor.format, F::Rgba8UnormSrgb | F::Rgba8Unorm) {
+        return;
+    }
+    let (mut w, mut h) = (img.width() as usize, img.height() as usize);
+    let Some(base) = img.data.clone() else { return };
+    if base.len() != w * h * 4 {
+        return;
+    }
+    let mut all = base.clone();
+    let mut level = base;
+    let mut count = 1;
+    while w > 1 || h > 1 {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let mut next = vec![0u8; nw * nh * 4];
+        for y in 0..nh {
+            for x in 0..nw {
+                for c in 0..4 {
+                    let mut sum = 0u32;
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        let sx = (x * 2 + dx).min(w - 1);
+                        let sy = (y * 2 + dy).min(h - 1);
+                        sum += level[(sy * w + sx) * 4 + c] as u32;
+                    }
+                    next[(y * nw + x) * 4 + c] = ((sum + 2) / 4) as u8;
+                }
+            }
+        }
+        all.extend_from_slice(&next);
+        level = next;
+        w = nw;
+        h = nh;
+        count += 1;
+    }
+    img.data = Some(all);
+    img.texture_descriptor.mip_level_count = count;
+    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        mipmap_filter: bevy::image::ImageFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..default()
+    });
 }
 
 fn spawn_level(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, assets: &AssetServer, mats: &LevelMats, level: &Level) {

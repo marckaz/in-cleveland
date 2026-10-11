@@ -21,7 +21,7 @@
 use glam::Vec3;
 
 use crate::climb::Ladder;
-use crate::greybox::{Ground, Level, Look, TriMesh};
+use crate::greybox::{Ground, Level, Look, PhotoTile, TriMesh};
 use crate::world::{Aabb, Fixture, MeshWorld};
 
 static DOWNTOWN: &[u8] = include_bytes!("../data/downtown.bin");
@@ -180,7 +180,7 @@ pub fn read_key(key: &str) -> Map {
 /// A region's baked map (`tools/osm/bake.py <region>`).
 pub fn read_region(key: &str, data: &[u8]) -> Map {
     let mut r = Reader { b: data, at: 0 };
-    assert_eq!(r.take(4), b"CLE5", "{key}.bin: wrong format (re-run tools/osm/bake.py {key})");
+    assert_eq!(r.take(4), b"CLE6", "{key}.bin: wrong format (re-run tools/osm/bake.py {key})");
     let bounds = (r.f32(), r.f32(), r.f32(), r.f32());
     let (gx0, gz0, cell) = (r.f32(), r.f32(), r.f32());
     let (nx, nz) = (r.u32() as usize, r.u32() as usize);
@@ -188,10 +188,13 @@ pub fn read_region(key: &str, data: &[u8]) -> Map {
     let lake = r.f32();
     let heights = (0..nx * nz).map(|_| r.f32()).collect();
     let tile = r.f32();
-    let tiles = (0..r.u32()).map(|_| {
-        let (ix, iz) = (r.u16() as u32, r.u16() as u32);
-        (ix, iz, format!("aerial/{key}/{ix}_{iz}.jpg"))
-    }).collect();
+    let tiles = (0..r.u32())
+        .map(|_| {
+            let (ix, iz, flags) = (r.u16() as u32, r.u16() as u32, r.u8());
+            let sharp = (flags & 1 != 0).then(|| format!("aerial/{key}/hd/{ix}_{iz}.jpg"));
+            PhotoTile { ix, iz, path: format!("aerial/{key}/{ix}_{iz}.jpg"), sharp }
+        })
+        .collect();
     let ground = Ground { x0: gx0, z0: gz0, cell, nx, nz, heights, lake: real_ground.then_some(lake), tile, tiles };
     let mut buildings = vec![];
     let mut grounded = vec![];

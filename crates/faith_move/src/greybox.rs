@@ -67,8 +67,19 @@ pub struct Ground {
     pub lake: Option<f32>,
     /// Size of one photo tile, in metres.
     pub tile: f32,
-    /// Each photo tile: (ix, iz, asset path), covering x0 + ix * tile.. and z0 + iz * tile..
-    pub tiles: Vec<(u32, u32, String)>,
+    /// The photo tiles, covering x0 + ix * tile.. and z0 + iz * tile..
+    pub tiles: Vec<PhotoTile>,
+}
+
+/// One tile of the aerial photo on the ground.
+#[derive(Clone, Debug, Default)]
+pub struct PhotoTile {
+    pub ix: u32,
+    pub iz: u32,
+    /// The whole-map photo (a few metres a pixel), always shown far off.
+    pub path: String,
+    /// The sharp photo (half a metre a pixel), loaded when you come near, if there is one.
+    pub sharp: Option<String>,
 }
 
 impl Ground {

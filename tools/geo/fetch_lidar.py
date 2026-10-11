@@ -20,6 +20,7 @@ Heights are each cell's highest point minus the ground under it; the ground unde
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -139,19 +140,29 @@ def region(key, cfg):
         pb = f"([{cx0}, {cx1}], [{cy0}, {cy1}])"
         tmp = tempfile.mkdtemp()
         grid = {"resolution": RES, "bounds": pb, "data_type": "float32", "nodata": -9999, "gdaldriver": "GTiff"}
-        stages = [
+        laz = f"{tmp}/piece.las"
+        read_it = [
             # Bounds given in web mercator whatever the survey is stored in; points reprojected to it.
             {"type": "readers.ept", "filename": url, "bounds": pb + "/EPSG:3857", "resolution": READ_RES, "threads": 8},
             {"type": "filters.reprojection", "out_srs": "EPSG:3857"},
             # Not noise (7: low, 18: high).
-            {"type": "filters.range", "limits": "Classification![7:7],Classification![18:18]", "tag": "clean"},
-            {"type": "filters.range", "inputs": ["clean"], "limits": "Classification[2:2]", "tag": "ground"},
-            {"type": "writers.gdal", "inputs": ["ground"], "filename": f"{tmp}/dtm.tif", "output_type": "mean", **grid},
-            {"type": "filters.range", "inputs": ["clean"], "limits": "Classification[6:6]" if buildings else "Classification[0:31]", "tag": "tops"},
-            {"type": "writers.gdal", "inputs": ["tops"], "filename": f"{tmp}/top.tif", "output_type": "max", **grid},
+            {"type": "filters.range", "limits": "Classification![7:7],Classification![18:18]"},
+            {"type": "writers.las", "filename": laz},
+        ]
+        ground_it = [
+            {"type": "readers.las", "filename": laz},
+            {"type": "filters.range", "limits": "Classification[2:2]"},
+            {"type": "writers.gdal", "filename": f"{tmp}/dtm.tif", "output_type": "mean", **grid},
+        ]
+        tops_it = [
+            {"type": "readers.las", "filename": laz},
+            {"type": "filters.range", "limits": "Classification[6:6]" if buildings else "Classification[0:31]"},
+            {"type": "writers.gdal", "filename": f"{tmp}/top.tif", "output_type": "max", **grid},
         ]
         try:
-            pdal(stages)
+            pdal(read_it)
+            pdal(ground_it)
+            pdal(tops_it)
         except SystemExit as e:
             # A piece with no ground or no buildings (all lake) has nothing to write.
             if k < 3:
@@ -164,6 +175,7 @@ def region(key, cfg):
             if a is not None:
                 a = a[:h_, :w_]
                 arr[j:j + a.shape[0], i:i + a.shape[1]] = a
+        shutil.rmtree(tmp, ignore_errors=True)
         if (k + 1) % 4 == 0 or k + 1 == len(pieces):
             print(f"lidar {key}: {k + 1}/{len(pieces)} pieces", flush=True)
 

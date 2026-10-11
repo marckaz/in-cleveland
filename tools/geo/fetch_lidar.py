@@ -36,7 +36,11 @@ RES = 2.0  # web-mercator metres per cell
 READ_RES = 1.0  # how finely to read the point cloud (EPT resolution)
 
 
+DIAG = []
+
+
 def note(msg):
+    DIAG.append(msg)
     print(f"::notice::{msg}", file=sys.stderr)
     print(msg, flush=True)
 
@@ -150,7 +154,8 @@ def region(key, cfg):
             pdal(stages)
         except SystemExit as e:
             # A piece with no ground or no buildings (all lake) has nothing to write.
-            print(f"::warning::lidar {key}: piece {k + 1} skipped: {str(e)[:600]}", file=sys.stderr)
+            if k < 3:
+                note(f"lidar {key}: piece {k + 1} skipped: {str(e)[:500]}")
             continue
         for arr, layer in ((dtm, "dtm"), (top, "top")):
             a = read(f"{tmp}/{layer}.tif")
@@ -201,7 +206,8 @@ def main():
         try:
             region(k, REGIONS[k])
         except BaseException as e:
-            print(f"::error::lidar {k}: {one_line(str(e))}%0A{one_line(traceback.format_exc()[-1200:])}", file=sys.stderr)
+            diag = " | ".join(d for d in DIAG if k in d)[-1500:]
+            print(f"::error::lidar {k}: {one_line(str(e))}%0A{one_line(diag)}%0A{one_line(traceback.format_exc()[-600:])}", file=sys.stderr)
             failed.append(k)
     if failed:
         raise SystemExit(1)
